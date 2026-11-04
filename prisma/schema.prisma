@@ -1,0 +1,355 @@
+// Shipped — บันทึกรถเข้ารับสินค้า + ใบนำจ่าย (manifest) + พัสดุ + สินค้าตีกลับ
+// รายละเอียดระบบ → ../SYSTEM.md
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// รถที่เคยมารับ — เก็บไว้ให้เลือก ไม่ต้องพิมพ์ทะเบียนซ้ำ
+model Vehicle {
+  id         String    @id @default(cuid())
+  plate      String    @unique // ทะเบียนรถ (ตัดช่องว่างซ้ำแล้ว)
+  carrier    String? // ขนส่งประจำ — เติมให้อัตโนมัติตอนเริ่มงาน
+  driverName String?
+  phone      String?
+  note       String?
+  active     Boolean   @default(true) // false = ซ่อนจากรายการเลือก (ยังเก็บประวัติ)
+  lastUsedAt DateTime? // เรียงรถที่มาบ่อยไว้บนสุด
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  pickups Pickup[]
+
+  @@index([active, lastUsedAt])
+}
+
+enum PickupStatus {
+  DOING // กำลังรับของ (กดเริ่มงานแล้ว ยังไม่ปิดงาน)
+  DONE // ปิดงานแล้ว
+}
+
+/// รอบรถเข้ารับสินค้า 1 ครั้ง
+/// เวลาเริ่ม = ตอนกด "เริ่มงาน" · เวลาสิ้นสุด = ตอนกด "ปิดงาน"
+model Pickup {
+  id          String       @id @default(cuid())
+  vehicleId   String?
+  plate       String // ทะเบียน ณ ตอนนั้น (สำเนาจาก Vehicle — เป็นหลักฐาน แก้รถทีหลังก็ไม่เปลี่ยน)
+  carrier     String? // ขนส่ง เช่น Flash, J&T, SPX
+  driverName  String?
+  status      PickupStatus @default(DOING)
+  arrivedAt   DateTime // เวลาเริ่มงาน
+  departedAt  DateTime? // เวลาปิดงาน
+  parcelCount Int? // จำนวนชิ้นที่รถนับรับไป
+  recordedBy  String? // ผู้จด (ชื่อ ณ ตอนนั้น)
+  /// เจ้าของงาน — staff เห็น/แก้ได้เฉพาะงานของตัวเอง แอดมินเห็นทุกงาน (src/lib/pickup-access.ts) · null = ไม่มีเจ้าของ (แอดมินเท่านั้น)
+  createdById String?
+  note        String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  createdBy User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  vehicle   Vehicle?         @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  manifests PickupManifest[]
+  cages     PickupCage[]
+  openedCages Cage[]         @relation("CageOrigin")
+
+  @@index([arrivedAt])
+  @@index([plate])
+  @@index([status])
+  @@index([status, departedAt])
+  @@index([vehicleId])
+  @@index([createdById, status])
+}
+
+/// manifest ที่จดไว้ในรอบรถ — จดแค่ 4 หลักท้ายก็ได้ ระบบจะจับคู่กับ Manifest ให้
+model PickupManifest {
+  id         String   @id @default(cuid())
+  pickupId   String
+  code       String // ตามที่จด (4 หลักท้าย หรือเลขเต็ม)
+  manifestId String? // null = ยังจับคู่ไม่ได้ (ยังไม่ sync / เจอหลายใบ)
+  note       String? // ของที่รถรับไปไม่ตรงกับใบ เช่น ขาด 1 กล่อง
+  addedBy    String? // ชื่อผู้ใช้ที่จด (จาก login)
+  /// ใบเดียวแบ่งขึ้นหลายคัน — จำนวนกล่องที่คันนี้รับไปจากใบนี้ · null = ทั้งใบ (ใบไม่ได้แบ่ง)
+  /// ใบที่อยู่ในกรง: ระบบคำนวณให้จากสัดส่วนของกรง (PickupCage) — ไม่ต้องใส่เอง
+  parcelCount Int?
+  /// กรงที่ใบนี้อยู่ (1 กรง มีหลายใบ) · null = จดก่อนมีระบบกรง
+  cageId     String?
+  createdAt  DateTime @default(now())
+
+  pickup   Pickup    @relation(fields: [pickupId], references: [id], onDelete: Cascade)
+  manifest Manifest? @relation(fields: [manifestId], references: [id], onDelete: SetNull)
+  cage     Cage?     @relation(fields: [cageId], references: [id], onDelete: SetNull)
+
+  @@unique([pickupId, code])
+  @@index([manifestId])
+  @@index([cageId])
+}
+
+/// กรง — ของที่วางรวมกันหน้าร้าน 1 กรงมีหลาย manifest และอาจขึ้นรถหลายคัน
+/// เจ้าหน้าที่แบ่งที่ระดับกรง (ทั้งกรง / ครึ่ง / นับได้ N) แล้วระบบกระจายลงแต่ละใบให้เอง
+model Cage {
+  id             String    @id @default(cuid())
+  label          String // A, B, C… (นับใหม่ทุกวัน)
+  originPickupId String? // รถคันแรกที่จดกรงนี้
+  closedAt       DateTime? // กด "ปิดกรง" แล้ว — ใบถัดไปขึ้นกรงใหม่
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+
+  origin    Pickup?          @relation("CageOrigin", fields: [originPickupId], references: [id], onDelete: SetNull)
+  manifests PickupManifest[]
+  shares    PickupCage[]
+
+  @@index([createdAt])
+  @@index([originPickupId])
+}
+
+/// รถคันนี้เอากรงนี้ไปเท่าไหร่
+/// share = สัดส่วน 0–1 · count = นับได้กี่กล่อง · ทั้งคู่ว่าง = "ที่เหลือ" (กรงไม่ได้แบ่ง = ทั้งกรง)
+model PickupCage {
+  id        String   @id @default(cuid())
+  pickupId  String
+  cageId    String
+  share     Float?
+  count     Int?
+  createdAt DateTime @default(now())
+
+  pickup Pickup @relation(fields: [pickupId], references: [id], onDelete: Cascade)
+  cage   Cage   @relation(fields: [cageId], references: [id], onDelete: Cascade)
+
+  @@unique([pickupId, cageId])
+  @@index([cageId])
+}
+
+/// ใบนำจ่าย — sync จาก BigSeller หรือสร้างเองตอนจด
+model Manifest {
+  id                 String    @id @default(cuid())
+  manifestNo         String    @unique // เช่น MFG963072007
+  last4              String // 4 หลักท้าย ใช้จับคู่กับที่เจ้าหน้าที่จด
+  logisticsName      String?
+  printedAt          DateTime?
+  bigsellerInfo      String? // field manifestInfomation ดิบจาก BigSeller
+  parcelCount        Int? // จำนวนกล่องในใบตาม BigSeller (manifestInfomation)
+  /// ดึงเลขแทร็คกิ้งทั้งใบจาก BigSeller แล้วเมื่อไหร่ — มีค่าแล้ว = ใช้ของในเครื่อง ไม่ยิงซ้ำ
+  trackingsFetchedAt DateTime?
+  statusesFetchedAt  DateTime? // ดึงสถานะทุกชิ้นจาก BigSeller ล่าสุด
+  source             String    @default("bigseller") // bigseller | manual
+  syncedAt           DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  parcels ManifestParcel[]
+  pickups PickupManifest[]
+
+  @@index([last4])
+  @@index([printedAt])
+}
+
+enum ParcelStatus {
+  SHIPPED // ส่งออกจากร้านแล้ว
+  DELIVERED // ถึงมือลูกค้า
+  RETURNING // กำลังตีกลับ
+  RETURNED // ตีกลับถึงร้านแล้ว
+  PROBLEM // มีปัญหา / หาย
+  CANCELLED_AFTER // ยกเลิกหลังขึ้นรถ — เราปิดงานส่งไปแล้ว แต่ BigSeller ขึ้นยกเลิก (ของไปกับรถ ร้านยังไม่ได้คืน)
+}
+
+/// พัสดุ 1 กล่องในใบนำจ่าย
+model ManifestParcel {
+  id                String       @id @default(cuid())
+  manifestId        String
+  trackingNo        String
+  orderNo           String?
+  platform          String?
+  shopName          String?
+  shippingMethod    String? // ขนส่งตาม BigSeller เช่น Flash Express Thailand — ใช้กรองของที่สแกนปนมา
+  packageNo         String?
+  /// สินค้าในกล่อง [{ sku, name, qty, img }] — ดึงจาก BigSeller Wave
+  items             Json?
+  itemsSyncedAt     DateTime?
+  /// บันทึกการทำงานจาก BigSeller (order/operate/log) — ใครสแกน ใครพิมพ์
+  bsOrderId         String? // orderId ภายในของ BigSeller (ไม่ใช่เลขออเดอร์แพลตฟอร์ม)
+  scannedBy         String? // เช่น james@G963010006
+  scannedAt         DateTime?
+  /// [{ at, raw, user, action, status }] เรียงเก่า → ใหม่
+  orderLog          Json?
+  orderLogFetchedAt DateTime?
+  bsState           String? // สถานะออเดอร์ใน BigSeller (โค้ด) เช่น pickup, shipped, completed
+  bsStatusText      String? // ชื่อสถานะตามภาษาบัญชี เช่น รอรับสินค้า
+  /// สถานะ BigSeller เปลี่ยนล่าสุดเมื่อไหร่ — ไม่ขยับเกิน 2 วัน = ค้าง (รายงานประจำวัน)
+  bsStatusChangedAt DateTime?
+  /// เลิกติดตามแล้ว (สำเร็จ / ยกเลิก — รายงานไปครั้งเดียวแล้ว)
+  trackingDoneAt    DateTime?
+  /// สถานะจากเว็บ Flash Express (ยิงเลขแทร็คไปถาม) — ใช้แสดงแทนสถานะ BigSeller
+  /// 1 รับพัสดุแล้ว · 2 ระหว่างขนส่ง · 3 กำลังนำส่ง · 4 ตกค้าง · 5 เซ็นรับแล้ว · 6 มีปัญหา · 7 ตีกลับ · 8 ปิดงานผิดปกติ · 9 ยกเลิก
+  flashState        Int?
+  flashStateText    String? // ข้อความสถานะตามเว็บ Flash เช่น "เซ็นรับแล้ว"
+  flashLastRoute    String? // ความเคลื่อนไหวล่าสุด เช่น "พนักงานออกนำส่ง · สาขาลาดพร้าว"
+  flashRoutedAt     DateTime? // เวลาของความเคลื่อนไหวล่าสุด
+  flashFetchedAt    DateTime? // ถาม Flash ล่าสุดเมื่อไหร่ (null = ยังไม่เคย)
+  flashNotFound     Boolean      @default(false) // Flash ตอบว่าไม่พบเลขนี้ (ยังไม่เข้าระบบ / ไม่ใช่ Flash)
+  /// หลักฐานการส่งถึงจาก Flash Open API (deliveredInfo) { signer, signerType, at, photos[], pod, lat, lng }
+  flashPod          Json?
+  flashPodAt        DateTime? // ดึงหลักฐานเมื่อไหร่ (null = ยังไม่ดึง)
+  /// ป้ายปัญหาจาก webhook (markerCategory) เช่น 17 ผู้รับปฏิเสธ · 23 ที่อยู่ผิด · 40 ติดต่อไม่ได้
+  flashMarker       Int?
+  /// เช็ค Flash ชิ้นนี้อีกครั้งเมื่อไหร่ — ถี่/ห่างตามสถานะ (src/lib/track-schedule.ts) · null = ยังไม่เคยจัดคิว
+  nextCheckAt       DateTime?
+  source            String       @default("bigseller") // bigseller | scan
+  status            ParcelStatus @default(SHIPPED)
+  statusNote        String?
+  statusBy          String? // ชื่อผู้ใช้ที่เปลี่ยนสถานะล่าสุด (จาก login)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  manifest Manifest     @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  returns  ReturnScan[]
+  events   ParcelEvent[]
+
+  @@unique([manifestId, trackingNo])
+  @@index([trackingNo])
+  @@index([orderNo])
+  @@index([trackingDoneAt])
+  @@index([flashFetchedAt])
+  // หน้าติดตามสถานะ — กรองตามสถานะร้าน / สถานะ Flash / เวลาเคลื่อนไหวล่าสุด
+  @@index([status])
+  // แท็บ "ยกเลิก" (bsState = canceled) — ไม่มี index ต้องอ่านทั้งตาราง
+  @@index([bsState])
+  @@index([flashState, flashRoutedAt])
+  @@index([flashNotFound])
+  // แท็บ "สถานะไม่อัปเดต" — manifestId IN (...) แล้วตอบจาก index ได้เลย ไม่ต้องอ่านแถวเต็ม (แถวกว้าง ~2 KB)
+  @@index([manifestId, status, flashState, flashRoutedAt, bsState], map: "ManifestParcel_tracking_idx")
+  @@index([createdAt])
+  @@index([nextCheckAt])
+}
+
+/// สแกนรับพัสดุตีกลับที่ร้าน — หลักฐานว่าได้ของคืนจริง
+model ReturnScan {
+  id         String   @id @default(cuid())
+  trackingNo String
+  parcelId   String? // null = หาพัสดุต้นทางไม่เจอ
+  receivedAt DateTime @default(now())
+  receivedBy String?
+  condition  String? // สภาพสินค้า
+  note       String?
+
+  parcel ManifestParcel? @relation(fields: [parcelId], references: [id], onDelete: SetNull)
+
+  @@index([trackingNo])
+  @@index([receivedAt])
+  @@index([parcelId])
+}
+
+/// cookie BigSeller ล่าสุด (มีแถวเดียว id = "default")
+/// BigSeller หมุน cookie ผ่าน Set-Cookie → เก็บค่าใหม่ที่นี่ทุกครั้ง แทนการแก้ .env
+model BigSellerSession {
+  id              String    @id @default("default")
+  cookie          String
+  envSeed         String? // ค่า BIGSELLER_COOKIE ใน .env ที่รับมาล่าสุด — .env เปลี่ยน = คนแปะใหม่ ใช้ค่า .env
+  rotatedAt       DateTime? // BigSeller ส่ง cookie ใหม่มาล่าสุดเมื่อไหร่
+  rotations       Int       @default(0)
+  lastOkAt        DateTime? // ยิงผ่านล่าสุด
+  lastKeepAliveAt DateTime?
+  lastErrorAt     DateTime?
+  lastErrorKind   String?
+  lastError       String?
+  /// cookie ที่โดน auth error ไปแล้ว — ตรงกับ cookie ปัจจุบัน = หยุด keep-alive จนกว่าจะแปะใหม่
+  deadCookie      String?
+  updatedAt       DateTime  @updatedAt
+}
+
+/// ประวัติการ sync กับ BigSeller — ไว้โชว์ว่า cookie หมดอายุหรือยัง
+model SyncRun {
+  id         String    @id @default(cuid())
+  kind       String // manifests | items
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  ok         Boolean   @default(false)
+  errorKind  String? // no-cookie | auth | permission | rate-limit | api | network
+  message    String?
+  count      Int       @default(0)
+
+  @@index([startedAt])
+}
+
+/// ผู้ใช้ — login ด้วยชื่อผู้ใช้ + รหัสผ่าน · ชื่อที่แสดงใช้เป็น "ผู้จด/ผู้แก้" อัตโนมัติ
+model User {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  name         String
+  passwordHash String // scrypt — ดู src/lib/password.ts
+  active       Boolean   @default(true)
+  approvedAt   DateTime? // null = สมัครเองแล้วยังรออนุมัติ (login ไม่ได้)
+  role         UserRole  @default(STAFF) // ADMIN = อนุมัติคนสมัคร / จัดการผู้ใช้ / ดูประวัติของทุกคน
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  activities Activity[]
+  pickups    Pickup[]
+}
+
+/// ลิงก์สาธารณะดูสถานะพัสดุ (ไม่ต้อง login) — /share/<slug>
+/// kind "parcels" = ชุดที่เลือกไว้ (parcelIds) · "case" = เคสในหน้าติดตามสถานะ (filter) รายการล่าสุดเสมอ
+model ShareLink {
+  id           String    @id @default(cuid())
+  slug         String    @unique // สุ่ม เดาไม่ได้
+  title        String
+  kind         String
+  parcelIds    String[]
+  /// { tab, rangeDays, staleDays }
+  filter       Json?
+  createdBy    String?
+  createdAt    DateTime  @default(now())
+  views        Int       @default(0)
+  lastViewedAt DateTime?
+  revokedAt    DateTime? // ปิดลิงก์แล้ว — เปิดไม่ได้
+
+  @@index([createdAt])
+}
+
+/// ใครทำอะไร เมื่อไหร่ — บันทึกจากทุก action ที่แก้ข้อมูล
+model Activity {
+  id         String   @id @default(cuid())
+  userId     String?
+  userName   String // เก็บชื่อตอนทำไว้ด้วย เผื่อผู้ใช้ถูกลบ/เปลี่ยนชื่อ
+  action     String // เช่น pickup.start, manifest.add, parcel.status
+  targetType String? // pickup | manifest | parcel | vehicle | user | session
+  targetId   String?
+  detail     String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@index([userId, createdAt])
+}
+
+/// สิทธิ์ผู้ใช้ — ตั้งเองใน DB ได้ (UPDATE "User" SET role = 'ADMIN' WHERE username = '...')
+enum UserRole {
+  ADMIN // อนุมัติคนสมัคร · จัดการผู้ใช้ · ดูประวัติการใช้งานของทุกคน
+  STAFF // ใช้งานทั่วไป · เห็นประวัติของตัวเองเท่านั้น
+}
+
+/// เหตุการณ์สถานะเปลี่ยน — รอบเบื้องหลัง (track-tick) เขียนทุกครั้งที่ Flash/BigSeller/ร้าน เปลี่ยน
+/// หน้าเว็บดูจากตารางนี้ว่ามีอะไรใหม่ (ไม่ต้องยิงถามขนส่งเอง)
+model ParcelEvent {
+  id         String   @id @default(cuid())
+  parcelId   String
+  trackingNo String
+  source     String // flash | bigseller
+  field      String // flashState | bsStatus | status
+  fromValue  String?
+  toValue    String?
+  text       String? // ข้อความอ่านง่าย เช่น "กำลังนำส่ง → เซ็นรับแล้ว"
+  createdAt  DateTime @default(now())
+
+  parcel ManifestParcel @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([parcelId, createdAt])
+}

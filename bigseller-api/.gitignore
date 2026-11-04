@@ -1,0 +1,10 @@
+# ห้ามหลุดเด็ดขาด — มี session cookie อยู่ข้างใน
+.env
+.env.*
+!.env.example
+cookie/*.txt
+cookie/cookie.json
+
+node_modules/
+out/
+*.log

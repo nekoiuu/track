@@ -1,0 +1,19 @@
+{
+  "name": "bigseller-api",
+  "version": "1.0.0",
+  "description": "BigSeller internal web API client",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "statuses": "node examples/get-statuses.js",
+    "products": "node examples/list-products.js",
+    "products:ui": "node client/products.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5"
+  }
+}

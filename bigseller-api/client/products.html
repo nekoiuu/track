@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ค้นหา / แก้ไขสินค้า</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --fg:#1a1d21; --dim:#6b7280;
+    --accent:#2563eb; --accent-soft:#e8efff; --warn:#b45309; --danger:#b91c1c;
+    --mark:#fde68a; --ok:#15803d;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14171a; --card:#1c2024; --line:#2c3238; --fg:#e6e8ea; --dim:#9aa3ad;
+      --accent:#60a5fa; --accent-soft:#1e293b; --warn:#fbbf24; --danger:#f87171;
+      --mark:#7c5e00; --ok:#4ade80;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 "Segoe UI",system-ui,-apple-system,"Noto Sans Thai",sans-serif}
+  mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
+
+  /* ---------- แถบบน ---------- */
+  header{position:sticky;top:0;z-index:5;background:var(--bg);
+         border-bottom:1px solid var(--line);padding:12px 16px 10px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:1100px;margin:0 auto}
+  #q{flex:1 1 320px;min-width:200px;padding:10px 12px;font-size:15px;border-radius:8px;
+     border:1px solid var(--line);background:var(--card);color:var(--fg)}
+  #q:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
+  .seg button{border:0;background:transparent;color:var(--dim);padding:8px 12px;cursor:pointer;font:inherit}
+  .seg button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .btn{border:1px solid var(--line);background:var(--card);color:var(--fg);
+       padding:8px 14px;border-radius:8px;cursor:pointer;font:inherit}
+  .btn:hover{border-color:var(--accent)}
+  .btn[aria-pressed=true]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn.primary:disabled{opacity:.45;cursor:default}
+  .meta{color:var(--dim);font-size:13px;max-width:1100px;margin:8px auto 0;display:flex;
+        gap:12px;align-items:center;flex-wrap:wrap}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block;margin-right:5px}
+
+  /* ---------- รายการ ---------- */
+  main{max-width:1100px;margin:16px auto;padding:0 16px 80px}
+  .prod{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        margin-bottom:10px;padding:10px 12px}
+  .phead{display:flex;gap:8px;align-items:flex-start}
+  .idx{color:var(--dim);font-size:12px;min-width:38px;padding-top:6px;font-variant-numeric:tabular-nums}
+  .fld{flex:1;padding:5px 7px;border-radius:6px;border:1px solid transparent;cursor:text;
+       word-break:break-word;min-height:30px}
+  .fld:hover{border-color:var(--line)}
+  .fld input{font:inherit;color:var(--fg);background:var(--bg);
+             border:1px solid var(--accent);border-radius:6px;padding:4px 6px;margin:-5px -7px;
+             width:calc(100% + 14px)}
+  .pname{font-weight:600}
+  .skus{margin:6px 0 0 38px;display:flex;flex-direction:column;gap:2px}
+  .sku{display:flex;gap:6px;align-items:center;border-top:1px solid var(--line);padding:2px 0}
+  .sku .fld{font-size:13px}
+  .qty{width:74px;flex:none;font:inherit;text-align:right;padding:5px 7px;border-radius:6px;
+       border:1px solid var(--line);background:var(--bg);color:var(--fg);font-variant-numeric:tabular-nums}
+  .icon{border:0;background:transparent;color:var(--dim);cursor:pointer;padding:4px 6px;
+        border-radius:6px;font-size:13px;flex:none}
+  .icon:hover{background:var(--accent-soft);color:var(--accent)}
+  .icon.del:hover{background:transparent;color:var(--danger)}
+  .pfoot{margin:6px 0 0 38px;display:flex;gap:6px}
+  .link{background:none;border:0;color:var(--dim);cursor:pointer;font:inherit;font-size:12px;padding:2px 4px}
+  .link:hover{color:var(--accent);text-decoration:underline}
+  .link.del:hover{color:var(--danger)}
+  .empty{color:var(--dim);text-align:center;padding:48px 0}
+  #more{display:block;margin:12px auto}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);
+         background:var(--card);border:1px solid var(--line);border-left:3px solid var(--ok);
+         padding:10px 16px;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.18);
+         opacity:0;transition:.18s;pointer-events:none;max-width:90vw}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.err{border-left-color:var(--danger)}
+  kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="row">
+    <input id="q" type="search" placeholder="ค้นหาชื่อสินค้า หรือ SKU…  (เว้นวรรค = ต้องมีครบทุกคำ)" autofocus>
+    <div class="seg" id="scope">
+      <button data-scope="all"  aria-pressed="true">ทั้งหมด</button>
+      <button data-scope="prod" aria-pressed="false">ชื่อสินค้า</button>
+      <button data-scope="sku"  aria-pressed="false">SKU</button>
+    </div>
+    <button class="btn" data-only="dup"  aria-pressed="false" title="แสดงเฉพาะ SKU ที่ชื่อซ้ำกันทั้งไฟล์">SKU ซ้ำ</button>
+    <button class="btn" data-only="todo" aria-pressed="false" title="แสดงเฉพาะ SKU ที่ยังไม่ได้ใส่ qty">ยังไม่ใส่ qty</button>
+    <button class="btn" id="addBtn">+ สินค้า</button>
+    <button class="btn primary" id="saveBtn" disabled>บันทึก</button>
+  </div>
+  <div class="meta">
+    <span id="count"></span>
+    <span id="dirty" hidden><span class="dot"></span>ยังไม่ได้บันทึก</span>
+    <span style="margin-left:auto"><kbd>/</kbd> ค้นหา · <kbd>Ctrl</kbd>+<kbd>S</kbd> บันทึก · คลิกที่ข้อความเพื่อแก้</span>
+  </div>
+</header>
+
+<main id="list"></main>
+<div id="toast"></div>
+
+<script>
+const PAGE_SIZE = 60;
+
+let data  = { products: [] };
+let dirty = false;
+let scope = 'all';
+let only  = null;            // null | 'dup' (SKU ชื่อซ้ำ) | 'todo' (qty ยังเป็น null)
+let shown = PAGE_SIZE;
+let terms = [];
+
+const $ = s => document.querySelector(s);
+const list = $('#list');
+
+// ------------------------------------------------------------------ โหลดข้อมูล
+
+fetch('/api/products')
+  .then(r => r.json())
+  .then(d => { data = d; render(); })
+  .catch(e => toast('โหลดไฟล์ไม่ได้: ' + e.message, true));
+
+// --------------------------------------------------------------------- ค้นหา
+
+const norm = s => s.toLowerCase().replace(/\s+/g, ' ').trim();
+const hit  = s => { const t = norm(s); return terms.every(w => t.includes(w)); };
+
+/** ชื่อ SKU ที่โผล่ซ้ำมากกว่า 1 ครั้งทั้งไฟล์ */
+function dupNames() {
+  const seen = new Map();
+  for (const p of data.products)
+    for (const s of p.skus) seen.set(norm(s.name), (seen.get(norm(s.name)) ?? 0) + 1);
+  return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+}
+
+/** คืน [{ p, i, skus:[{ s, j }] }] เฉพาะที่ตรงเงื่อนไข */
+function filtered() {
+  const dups = only === 'dup' ? dupNames() : null;
+  const out  = [];
+
+  data.products.forEach((p, i) => {
+    let skus = p.skus.map((s, j) => ({ s, j }));
+    if (only === 'dup')  skus = skus.filter(({ s }) => dups.has(norm(s.name)));
+    if (only === 'todo') skus = skus.filter(({ s }) => s.qty === null);
+    if (only && !skus.length) return;
+
+    if (terms.length) {
+      const pHit  = scope !== 'sku' && hit(p.name);
+      const sHits = scope !== 'prod' ? skus.filter(({ s }) => hit(s.name)) : [];
+      if (!pHit && !sHits.length) return;
+      if (!pHit) skus = sHits;                 // เจอที่ SKU → โชว์เฉพาะ SKU ที่ตรง
+    }
+    out.push({ p, i, skus });
+  });
+  return out;
+}
+
+// -------------------------------------------------------------------- แสดงผล
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/** ใส่ <mark> ให้คำที่ค้น */
+function hl(text) {
+  if (!terms.length) return esc(text);
+  const re = new RegExp('(' + terms.map(t => esc(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
+  return esc(text).replace(re, '<mark>$1</mark>');
+}
+
+function render() {
+  const rows  = filtered();
+  const total = data.products.reduce((a, p) => a + p.skus.length, 0);
+
+  $('#count').textContent = (terms.length || only)
+    ? `เจอ ${rows.length} สินค้า / ${rows.reduce((a, r) => a + r.skus.length, 0)} SKU  —  จากทั้งหมด ${data.products.length} สินค้า / ${total} SKU`
+    : `${data.products.length} สินค้า / ${total} SKU`;
+
+  if (!rows.length) {
+    list.innerHTML = '<p class="empty">ไม่เจอที่ตรงกับคำค้น</p>';
+    return;
+  }
+
+  list.innerHTML = rows.slice(0, shown).map(({ p, i, skus }) => `
+    <section class="prod">
+      <div class="phead">
+        <span class="idx">#${i + 1}</span>
+        <div class="fld pname" data-i="${i}" data-f="name" title="คลิกเพื่อแก้ชื่อสินค้า">${hl(p.name)}</div>
+      </div>
+      <div class="skus">
+        ${skus.map(({ s, j }) => `
+          <div class="sku">
+            <div class="fld" data-i="${i}" data-j="${j}" data-f="name" title="คลิกเพื่อแก้ชื่อ SKU">${hl(s.name)}</div>
+            <input class="qty" type="number" step="1" data-i="${i}" data-j="${j}" placeholder="—"
+                   value="${s.qty === null ? '' : esc(s.qty)}" title="qty ต่อ 1 ออเดอร์ (เว้นว่าง = ยังไม่ระบุ)">
+            <button class="icon" data-act="copy" data-i="${i}" data-j="${j}" title="คัดลอก {sku, qty} ไปใช้ใน main.js">&#10697;</button>
+            <button class="icon del" data-act="delsku" data-i="${i}" data-j="${j}" title="ลบ SKU นี้">&#10005;</button>
+          </div>`).join('')}
+      </div>
+      <div class="pfoot">
+        <button class="link" data-act="addsku" data-i="${i}">+ เพิ่ม SKU</button>
+        <button class="link del" data-act="delprod" data-i="${i}">ลบสินค้านี้</button>
+      </div>
+    </section>`).join('')
+    + (rows.length > shown
+        ? `<button class="btn" id="more">แสดงเพิ่ม (เหลืออีก ${rows.length - shown})</button>` : '');
+}
+
+// ------------------------------------------------------------- แก้ไขในบรรทัด
+
+list.addEventListener('click', e => {
+  if (e.target.id === 'more') { shown += PAGE_SIZE; render(); return; }
+
+  const act = e.target.closest('[data-act]');
+  if (act) return action(act);
+
+  const fld = e.target.closest('.fld');
+  if (fld && !fld.querySelector('input')) edit(fld);
+});
+
+function edit(fld) {
+  const { i, j, f } = fld.dataset;
+  const obj = j === undefined ? data.products[i] : data.products[i].skus[j];
+  const old = obj[f];
+
+  fld.innerHTML = '';
+  const inp = Object.assign(document.createElement('input'), { type: 'text', value: old });
+  fld.append(inp);
+  inp.focus();
+  inp.setSelectionRange(old.length, old.length);
+
+  const done = commit => {
+    if (commit && inp.value !== old) { obj[f] = inp.value; markDirty(); }
+    fld.innerHTML = hl(obj[f]);
+  };
+  inp.addEventListener('blur', () => done(true));
+  inp.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter')  { ev.preventDefault(); inp.blur(); }
+    if (ev.key === 'Escape') { ev.preventDefault(); inp.value = old; inp.blur(); }
+  });
+}
+
+list.addEventListener('change', e => {
+  const q = e.target.closest('.qty');
+  if (!q) return;
+  const sku = data.products[q.dataset.i].skus[q.dataset.j];
+  const n   = Number(q.value);
+
+  if (q.value.trim() === '')  { sku.qty = null; markDirty(); return; }        // ว่าง = ยังไม่ระบุ
+  if (!Number.isFinite(n))    { q.value = sku.qty ?? ''; return; }            // ไม่ใช่เลข → คืนค่าเดิม
+  sku.qty = n;
+  markDirty();
+});
+
+// ------------------------------------------------------------------ ปุ่มต่าง ๆ
+
+function action(btn) {
+  const { act, i, j } = btn.dataset;
+  const p = data.products[i];
+
+  if (act === 'copy') {
+    const s = p.skus[j];
+    navigator.clipboard.writeText(`{sku:${JSON.stringify(s.name)},qty:${s.qty}}`)
+      .then(() => toast(s.qty === null ? 'คัดลอกแล้ว — แต่ SKU นี้ยังไม่ได้ใส่ qty' : 'คัดลอกแล้ว: ' + s.name, s.qty === null))
+      .catch(() => toast('คัดลอกไม่ได้', true));
+    return;
+  }
+  if (act === 'addsku') { p.skus.push({ name: '', qty: 1 }); markDirty(); render(); focusLast(i); return; }
+  if (act === 'delsku') {
+    if (!confirm(`ลบ SKU นี้?\n\n${p.skus[j].name}`)) return;
+    p.skus.splice(j, 1); markDirty(); render(); return;
+  }
+  if (act === 'delprod') {
+    if (!confirm(`ลบสินค้านี้ทั้งก้อน (${p.skus.length} SKU)?\n\n${p.name}`)) return;
+    data.products.splice(i, 1); markDirty(); render(); return;
+  }
+}
+
+/** โฟกัสช่องชื่อ SKU ตัวท้ายของสินค้า i (หลังกด "+ เพิ่ม SKU") */
+function focusLast(i) {
+  const j   = data.products[i].skus.length - 1;
+  const fld = list.querySelector(`.sku .fld[data-i="${i}"][data-j="${j}"]`);
+  if (fld) { fld.scrollIntoView({ block: 'center' }); edit(fld); }
+}
+
+$('#addBtn').onclick = () => {
+  data.products.unshift({ name: 'สินค้าใหม่', skus: [{ name: '', qty: 1 }] });
+  $('#q').value = ''; terms = [];
+  setOnly(null);
+  shown = PAGE_SIZE;
+  markDirty(); render();
+  const fld = list.querySelector('.pname');
+  if (fld) edit(fld);
+};
+
+$('#q').addEventListener('input', e => {
+  terms = norm(e.target.value).split(' ').filter(Boolean);
+  shown = PAGE_SIZE;
+  render();
+});
+
+$('#scope').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  scope = b.dataset.scope;
+  [...$('#scope').children].forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  shown = PAGE_SIZE;
+  render();
+});
+
+/** สลับตัวกรองพิเศษ (กดปุ่มเดิมซ้ำ = ปิด) */
+function setOnly(mode) {
+  only = mode;
+  document.querySelectorAll('[data-only]')
+    .forEach(b => b.setAttribute('aria-pressed', String(b.dataset.only === only)));
+}
+
+document.querySelectorAll('[data-only]').forEach(b => {
+  b.onclick = () => { setOnly(only === b.dataset.only ? null : b.dataset.only); shown = PAGE_SIZE; render(); };
+});
+
+// -------------------------------------------------------------------- บันทึก
+
+function markDirty() {
+  dirty = true;
+  $('#dirty').hidden = false;
+  $('#saveBtn').disabled = false;
+}
+
+async function save() {
+  if (!dirty) return;
+  $('#saveBtn').disabled = true;
+  try {
+    const r = await fetch('/api/products', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error ?? r.statusText);
+    dirty = false;
+    $('#dirty').hidden = true;
+    toast(`บันทึกลง data/products.json แล้ว — ${j.products} สินค้า / ${j.skus} SKU`);
+  } catch (e) {
+    $('#saveBtn').disabled = false;
+    toast('บันทึกไม่สำเร็จ: ' + e.message, true);
+  }
+}
+$('#saveBtn').onclick = save;
+
+// -------------------------------------------------------------------- คีย์ลัด
+
+addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+  if (e.key === '/' && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) { e.preventDefault(); $('#q').focus(); }
+  if (e.key === 'Escape' && document.activeElement === $('#q')) {
+    $('#q').value = ''; terms = []; shown = PAGE_SIZE; render();
+  }
+});
+
+addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+let toastT;
+function toast(msg, err) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!err);
+  t.classList.add('show');
+  clearTimeout(toastT);
+  toastT = setTimeout(() => t.classList.remove('show'), 2600);
+}
+</script>
+</body>
+</html>

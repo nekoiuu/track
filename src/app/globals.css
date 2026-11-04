@@ -1,0 +1,297 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* ธีม "Track · Transit · Deliver" — น้ำเงินหลัก บนพื้นเทาฟ้าอ่อน แถบเมนูกรมท่า การ์ดขาวเงานุ่ม
+   ชื่อโทเคนเดิม (ink/body/link/teal…) คงไว้ — ทั้งแอปเปลี่ยนสีตามโดยไม่ต้องแก้ทีละไฟล์ */
+@theme {
+  --color-ink: #0f172a; /* Dark Navy — ตัวหนังสือหลัก / แถบเมนู */
+  --color-body: #475569;
+  --color-mute: #6b7280; /* Gray */
+  --color-hairline: #e5e7eb; /* Light Gray */
+  --color-hairline-strong: #9ca3af;
+  --color-canvas: #ffffff;
+  --color-canvas-soft: #f8fafc;
+  --color-canvas-soft-2: #f1f5f9;
+  --color-brand: #2563eb; /* Primary Blue */
+  --color-brand-deep: #1d4ed8;
+  --color-brand-sky: #60a5fa; /* Sky Blue */
+  --color-brand-soft: #eff6ff;
+  --color-navy: #0f172a;
+  --color-navy-2: #1e293b;
+  --color-link: #2563eb;
+  --color-link-deep: #1d4ed8;
+  --color-link-soft: #dbeafe;
+  --color-error: #ef4444;
+  --color-error-soft: #fee2e2;
+  --color-error-deep: #b91c1c;
+  --color-warning: #f59e0b;
+  --color-warning-soft: #fef3c7;
+  --color-warning-deep: #b45309;
+  --color-violet: #7c3aed;
+  --color-violet-soft: #ede9fe;
+  --color-teal: #10b981; /* Success */
+  --color-teal-soft: #d1fae5;
+  --color-teal-deep: #047857;
+
+  --shadow-card: 0 0 0 1px #0f172a0f, 0 1px 2px #0f172a08;
+  --shadow-float: 0 0 0 1px #0f172a0f, 0 4px 12px -6px #0f172a1f;
+  --shadow-modal: 0 0 0 1px #0f172a14, 0 8px 16px -4px #0f172a1a, 0 24px 48px -12px #0f172a33;
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@theme inline {
+  /* Inter (ละติน/ตัวเลข) + Sarabun (ไทย) */
+  --font-sans: var(--font-inter), var(--font-thai), system-ui, sans-serif;
+  --font-heading: var(--font-inter), var(--font-thai), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+
+  /* DESIGN.md: sm 6 · md 8 · lg 10 */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+:root {
+  --background: #f7f8fa;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #6b7280;
+  --accent: #eff6ff;
+  --accent-foreground: #1d4ed8;
+  --destructive: #ef4444;
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #60a5fa;
+  --radius: 0.75rem;
+  color-scheme: light;
+}
+
+/*
+ * มือถือใช้ขนาดตัวอักษรเต็ม 16px (เดิมย่อ 87.5%) — อ่านง่าย ปุ่มใหญ่พอให้นิ้วกดตอนยืนข้างรถ
+ */
+html {
+  font-size: 100%;
+}
+/* ช่องกรอกบนมือถือต้อง ≥ 16px ไม่งั้น iPhone ซูมเข้าตอนแตะ (ไม่อยู่ใน layer เพื่อให้ชนะ utility) */
+@media (max-width: 39.99rem) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background font-sans text-foreground;
+  }
+  ::selection {
+    background: #bfdbfe;
+    color: #0f172a;
+  }
+}
+
+/* ตัวเลข / เลขพัสดุ อ่านง่ายในตาราง */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── View transitions (React <ViewTransition>) ───────────────────────────────
+   ออกเร็ว เข้าช้ากว่าเล็กน้อย — ของเก่าไม่แย่งสายตาของใหม่ */
+:root {
+  --duration-exit: 80ms;
+  --duration-enter: 160ms;
+  --duration-move: 240ms;
+}
+
+::view-transition-old(.page) {
+  animation: var(--duration-exit) ease-in both vt-fade reverse;
+}
+::view-transition-new(.page) {
+  animation:
+    var(--duration-enter) ease-out var(--duration-exit) both vt-fade,
+    var(--duration-move) var(--ease-out-quint) both vt-rise;
+}
+::view-transition-group(*) {
+  animation-duration: var(--duration-move);
+  animation-timing-function: var(--ease-out-quint);
+}
+
+@keyframes vt-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes vt-rise {
+  from {
+    transform: translateY(6px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* จุดกะพริบของงานที่กำลังทำ */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-warning) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+.live-dot {
+  animation: pulse-ring 1.6s ease-out infinite;
+}
+
+/* ─── น้อง Claude พิกเซล (src/components/loading-buddy.tsx) — ขยับเป็นจังหวะ steps() ให้ดูเป็นเกมพิกเซล ─── */
+.buddy-in {
+  animation: vt-fade 200ms ease-out 150ms both;
+}
+.buddy-body {
+  animation: buddy-bob 0.5s steps(1, end) infinite;
+}
+.buddy-leg-a {
+  animation: buddy-step 0.5s steps(1, end) infinite;
+}
+.buddy-leg-b {
+  animation: buddy-step 0.5s steps(1, end) -0.25s infinite;
+}
+.buddy-shadow {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: buddy-shadow 0.5s steps(1, end) infinite;
+}
+.buddy-blink {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: buddy-blink 3.2s steps(1, end) infinite;
+}
+.buddy-dots span {
+  animation: buddy-dot 1.2s ease-in-out infinite;
+}
+.buddy-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.buddy-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+/* หน่วย = 1 ช่องพิกเซลของ viewBox */
+@keyframes buddy-bob {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-0.5px);
+  }
+}
+@keyframes buddy-step {
+  /* ขายกขึ้นครึ่งช่อง (หดสั้นลง) สลับกับวางลง */
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-0.5px);
+  }
+}
+@keyframes buddy-shadow {
+  0% {
+    transform: scaleX(1);
+  }
+  50% {
+    transform: scaleX(0.85);
+  }
+}
+@keyframes buddy-blink {
+  0% {
+    transform: scaleY(1);
+  }
+  92% {
+    transform: scaleY(0.2);
+  }
+  96% {
+    transform: scaleY(1);
+  }
+}
+@keyframes buddy-dot {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+  .live-dot,
+  .buddy-body,
+  .buddy-leg-a,
+  .buddy-leg-b,
+  .buddy-shadow,
+  .buddy-blink {
+    animation: none;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+}
+
+/* ─── มือถือ ────────────────────────────────────────────────────────────────
+   ความสูงแถบเมนูล่าง — แถบปุ่มลอย (เช่น ปิดงาน) วางเหนือแถบนี้ */
+:root {
+  --tabbar-h: 4.25rem;
+}
+
+/* แถบเมนูซ้าย (จอใหญ่ ≥ lg) */
+:root {
+  --sidebar-w: 15.5rem;
+}
