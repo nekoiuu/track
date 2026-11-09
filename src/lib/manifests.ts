@@ -17,6 +17,14 @@ export const getManifestPrefix = () =>
  * เอาจากใบล่าสุดที่ระบบรู้จัก เทียบกับ MANIFEST_PREFIX แล้วใช้ตัวที่ "ใหม่กว่า" — ไม่ต้องคอยแก้ .env
  */
 export async function currentManifestPrefix() {
+  return (await manifestPrefixCandidates())[0] ?? "";
+}
+
+/**
+ * เลขต้นที่เป็นไปได้ทั้งหมด (ตัวใหม่สุดก่อน) — ช่วงเปลี่ยนเลขต้น ใบเลขต้นเก่ากับใหม่พิมพ์ปนกันได้
+ * (เช่น BigSeller มี MFG96311… แล้ว แต่ใบที่ขึ้นรถยังเป็น MFG96310…) → ต้องลองทุกตัว ห้ามเดาตัวเดียว
+ */
+export async function manifestPrefixCandidates() {
   const env = getManifestPrefix();
   const latest = await db.manifest.findFirst({
     where: { source: "bigseller" },
@@ -25,18 +33,26 @@ export async function currentManifestPrefix() {
   });
   const fromDb = latest && latest.manifestNo.length > 4 ? latest.manifestNo.slice(0, -4).toUpperCase() : "";
   // เลขยาวเท่ากัน → เทียบตัวอักษรได้เลย (เลขมากกว่า = ใหม่กว่า)
-  if (fromDb && env && fromDb.length === env.length) return fromDb > env ? fromDb : env;
-  return env || fromDb;
+  const newestFirst = fromDb && env && fromDb.length === env.length && fromDb > env ? [fromDb, env] : [env, fromDb];
+  return [...new Set(newestFirst.filter(Boolean))];
 }
 
 /**
- * จด 4 หลักท้าย → ต่อเลขต้นให้เป็นเลขเต็ม (เช่น "2678" → "MFG963092678")
- * เลขต้น = ตัวที่ใหม่กว่าระหว่าง MANIFEST_PREFIX กับใบล่าสุดในระบบ (currentManifestPrefix)
+ * จด 4 หลักท้าย → หาใบในเครื่องที่ตรงกับเลขต้นตัวใดตัวหนึ่ง (พิมพ์ภายใน 7 วันก่อนรถเข้า ใบล่าสุดก่อน)
+ * เลขเต็ม → ตรงตัว
  */
-export async function expandManifestCodeAuto(code: string) {
-  if (!/^\d{4}$/.test(code)) return code;
-  const prefix = await currentManifestPrefix();
-  return prefix ? prefix + code : code;
+export async function findManifestByGuesses(guesses: string[], at: Date) {
+  if (guesses.length === 1) return findManifestByCode(guesses[0], at);
+  return db.manifest.findFirst({
+    where: {
+      manifestNo: { in: guesses },
+      OR: [
+        { printedAt: { gte: new Date(at.getTime() - LOOKBACK_MS), lte: new Date(at.getTime() + LOOKAHEAD_MS) } },
+        { printedAt: null },
+      ],
+    },
+    orderBy: [{ printedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+  });
 }
 
 /** "8839" → "MFG963088839" (ถ้าตั้ง prefix ไว้) · เลขอื่นคืนตามเดิม */

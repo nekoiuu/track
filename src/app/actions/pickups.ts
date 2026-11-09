@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { db } from "@/lib/db";
 import { fmtDateTime, fromLocalInput, normalizeCode } from "@/lib/format";
-import { createManualManifest, currentManifestPrefix, deleteManifestsWithoutPickup, expandManifestCodeAuto, findManifestByCode, isFullManifestNo } from "@/lib/manifests";
+import { createManualManifest, deleteManifestsWithoutPickup, findManifestByGuesses, isFullManifestNo, manifestPrefixCandidates } from "@/lib/manifests";
 import { fetchManifestTrackings, refreshManifestsIfStale } from "@/lib/bigseller";
 import { notifyPickupClosed } from "@/lib/line-messages";
 import { refreshPickupStatuses } from "@/lib/status-report";
@@ -168,22 +168,31 @@ export async function deletePickup(id: string, redirectTo?: string) {
 /** จด manifest เพิ่มเข้างาน — 4 หลักท้ายหรือเลขเต็ม */
 export async function addPickupManifest(pickupId: string, raw: string) {
   const user = await requirePickupAccess(pickupId);
-  // 4 หลักท้าย → ต่อเลขต้นเป็นเลขเต็ม (เลขต้นล่าสุด: MANIFEST_PREFIX หรือใบล่าสุดในระบบ แล้วแต่ตัวไหนใหม่กว่า)
-  const code = await expandManifestCodeAuto(normalizeCode(raw));
-  if (!code) return { error: "ใส่เลข manifest" };
+  const input = normalizeCode(raw);
+  if (!input) return { error: "ใส่เลข manifest" };
+  // 4 หลักท้าย → ลองทุกเลขต้นที่เป็นไปได้ (MANIFEST_PREFIX / ใบล่าสุดในระบบ) ไม่เดาตัวเดียว
+  // เคยเดาเลขต้นใหม่สุดตัวเดียว → ใบ MFG96310… กลายเป็น MFG96311… แล้วสร้างใบปลอมขึ้นมา
+  const short = /^\d{4}$/.test(input);
+  const prefixes = short ? await manifestPrefixCandidates() : [];
+  const guesses = prefixes.length ? prefixes.map((p) => p + input) : [input];
+  let code = guesses[0];
 
   const pickup = await db.pickup.findUnique({ where: { id: pickupId }, select: { arrivedAt: true } });
   if (!pickup) return { error: "ไม่พบงานนี้" };
 
-  const exists = await db.pickupManifest.findUnique({ where: { pickupId_code: { pickupId, code } } });
-  if (exists) return { error: `${code} จดไว้แล้ว` };
+  const exists = await db.pickupManifest.findFirst({ where: { pickupId, code: { in: [...new Set([input, ...guesses])] } } });
+  if (exists) return { error: `${exists.code} จดไว้แล้ว` };
 
   // ในเครื่องเก็บเฉพาะใบที่ขึ้นรถแล้ว (เช่น ใบที่แบ่งกับรถคันอื่น) — ไม่เจอ → ถาม BigSeller
-  let m = await findManifestByCode(code, pickup.arrivedAt);
+  let m = await findManifestByGuesses(guesses, pickup.arrivedAt);
   if (m) {
+    code = m.manifestNo;
     // ใบเดียวกันจดซ้ำในงานเดียวกัน (เช่น พิมพ์ 8665 แล้วยิงเลขเต็มอีก) → ไม่รับ
     const same = await db.pickupManifest.findFirst({ where: { pickupId, manifestId: m.id } });
     if (same) return { error: `${m.manifestNo} จดในงานนี้แล้ว (เป็น “${same.code}”)` };
+  } else {
+    // ยังไม่รู้เลขต้น → จดตามที่พิมพ์ (4 หลัก) ไว้ก่อน BigSeller จะจับคู่ได้ทุกเลขต้น (เลขท้ายตรง)
+    code = input;
   }
 
   // จดเลขไว้ก่อน (ยังไม่มีใบ) → BigSeller เจอใบแล้วจะเก็บเฉพาะใบที่ตรงกับเลขที่จดไว้
@@ -193,7 +202,18 @@ export async function addPickupManifest(pickupId: string, raw: string) {
     refreshed = await refreshManifestsIfStale();
     const linked = await db.pickupManifest.findUnique({ where: { id: pm.id }, select: { manifest: true } });
     m = linked?.manifest ?? null;
-    // เลขเต็มที่ BigSeller ไม่มี → สร้างใบเอง (ผูกกับรถคันนี้ทันที)
+    if (short) {
+      // จดเป็น 4 หลัก → เลือกใบตามลำดับเลขต้น แล้วเก็บเลขเต็มของใบที่เจอจริง
+      const best = await findManifestByGuesses(guesses, pickup.arrivedAt);
+      if (best) m = best;
+      if (m) {
+        code = m.manifestNo;
+        const clash = await db.pickupManifest.findFirst({ where: { pickupId, code, id: { not: pm.id } } });
+        await db.pickupManifest.update({ where: { id: pm.id }, data: { manifestId: m.id, ...(clash ? {} : { code }) } });
+      }
+    }
+    // เลขเต็มที่พิมพ์มาเองแต่ BigSeller ไม่มี → สร้างใบเอง (ผูกกับรถคันนี้ทันที)
+    // 4 หลักท้ายไม่สร้าง — ไม่รู้ว่าเลขต้นตัวไหนถูก (สร้างผิดตัว = ได้ใบปลอม) · รอ sync จับคู่ให้
     if (!m && isFullManifestNo(code)) {
       m = await createManualManifest(code);
       await db.pickupManifest.update({ where: { id: pm.id }, data: { manifestId: m.id } });
@@ -369,17 +389,20 @@ export async function replacePickupManifest(id: string, raw: string): Promise<Ma
   if (!user) return { error: "ไม่พบรายการนี้ (อาจถูกลบไปแล้ว) หรือเป็นงานของคนอื่น" };
   const old = await db.pickupManifest.findUnique({ where: { id }, include: { manifest: { select: { manifestNo: true } } } });
   if (!old) return { error: "ไม่พบรายการนี้ (อาจถูกลบไปแล้ว)" };
-  const code = await expandManifestCodeAuto(normalizeCode(raw));
+  const code = normalizeCode(raw);
   if (!code) return { error: "ใส่เลข manifest" };
   const oldLabel = old.manifest?.manifestNo ?? old.code;
+  // 4 หลักท้ายเดียวกับเลขเดิมที่ระบบต่อเลขต้นให้ (เช่น เดิม MFG963112678 พิมพ์ 2678) → ค้นใหม่ทุกเลขต้น
+  const sameLast4 =
+    /^\d{4}$/.test(code) && old.code.endsWith(code) && (old.code === code || (await manifestPrefixCandidates()).some((p) => old.code === p + code));
 
   // เลขเดิม (หรือเลขเต็มของใบเดิม) → ค้นใหม่
-  if (code === old.code || code === old.manifest?.manifestNo) {
+  if (code === old.code || code === old.manifest?.manifestNo || sameLast4) {
     await db.pickupManifest.delete({ where: { id } });
     await tidyCage(old.cageId, old.pickupId);
     await deleteManifestsWithoutPickup([old.manifestId]);
     const res = (await addPickupManifest(old.pickupId, code)) as ManifestActionResult;
-    if (old.note) await db.pickupManifest.updateMany({ where: { pickupId: old.pickupId, code }, data: { note: old.note } });
+    if (old.note) await db.pickupManifest.updateMany({ where: { pickupId: old.pickupId, code: { endsWith: code.slice(-4) }, note: null, createdAt: { gte: old.createdAt } }, data: { note: old.note } });
     audit(user, "manifest.resync", "pickup", old.pickupId, `${oldLabel} → ค้นใหม่`);
     return res;
   }
@@ -390,7 +413,7 @@ export async function replacePickupManifest(id: string, raw: string): Promise<Ma
   await db.pickupManifest.delete({ where: { id } });
   await tidyCage(old.cageId, old.pickupId);
   await deleteManifestsWithoutPickup([old.manifestId]);
-  if (old.note) await db.pickupManifest.updateMany({ where: { pickupId: old.pickupId, code, note: null }, data: { note: old.note } });
+  if (old.note) await db.pickupManifest.updateMany({ where: { pickupId: old.pickupId, code: { endsWith: code.slice(-4) }, note: null, createdAt: { gte: old.createdAt } }, data: { note: old.note } });
   audit(user, "manifest.replace", "pickup", old.pickupId, `${oldLabel} → ${code}`);
   revalidatePath("/", "layout");
   return { ...res, ok: `แก้ ${oldLabel} แล้ว · ${res.ok ?? code}` };
@@ -486,21 +509,13 @@ export async function renamePickupCage(pickupId: string, cageId: string, label: 
 
 // ──────────────────────────────────────────────── ดึงเลขแทร็คกิ้งใหม่ทั้งหมด
 
-/**
- * เลขที่จดไว้เป็นเลขเต็มที่ต่อด้วยเลขต้นเก่า (เช่น MFG963082678 แต่ตอนนี้เลขต้นเป็น MFG96309)
- * → แก้เป็นเลขต้นปัจจุบัน + 4 หลักท้าย · เลขอื่นคืนตามเดิม
- */
-function fixPrefix(code: string, prefix: string) {
-  if (!prefix || code.length !== prefix.length + 4) return code;
-  const old = code.slice(0, -4);
-  // เลขต้นเก่ากว่า (ยาวเท่ากัน เทียบตัวอักษรได้) → ใช้เลขต้นปัจจุบัน
-  return old < prefix ? prefix + code.slice(-4) : code;
-}
-
 type RefetchSummary = { pickups: number; manifests: number; fixed: string[]; failed: string[]; parcels: number };
 
-/** ทำทีละใบในรถคันเดียว: เลขต้นผิด → จับคู่ใบใหม่ · ใบถูกอยู่แล้ว → ดึงเลขแทร็คกิ้งจาก BigSeller ใหม่ (ทับของเดิม) */
-async function refetchOne(pickupId: string, prefix: string, sum: RefetchSummary) {
+/**
+ * ทำทีละใบในรถคันเดียว: ยังไม่มีใบ / จับคู่ผิด → ค้นใหม่ · ใบถูกอยู่แล้ว → ดึงเลขแทร็คกิ้งจาก BigSeller ใหม่ (ทับของเดิม)
+ * ใบที่ผูกกับเลขตรงตัวแล้วไม่แตะ — เลขต้นเก่า (MFG96310…) ยังใช้จริงได้ ห้ามเปลี่ยนเป็นเลขต้นใหม่เอง
+ */
+async function refetchOne(pickupId: string, prefixes: string[], sum: RefetchSummary) {
   const pms = await db.pickupManifest.findMany({
     where: { pickupId },
     orderBy: { createdAt: "asc" },
@@ -509,14 +524,15 @@ async function refetchOne(pickupId: string, prefix: string, sum: RefetchSummary)
   sum.pickups++;
   for (const pm of pms) {
     sum.manifests++;
-    const target = fixPrefix(pm.code, prefix);
     // จดเลขเต็มแต่ผูกกับใบเลขอื่น (จับคู่ผิด) → จับคู่ใหม่ด้วย
-    const mismatched = isFullManifestNo(target) && pm.manifest && pm.manifest.manifestNo !== target;
-    if (target !== pm.code || !pm.manifestId || mismatched) {
-      // เลขต้นผิด / ยังไม่มีใบ → จับคู่ใหม่ (ปุ่มแก้เลขตัวเดิม — พลาดแล้วของเดิมยังอยู่)
+    const mismatched = isFullManifestNo(pm.code) && pm.manifest && pm.manifest.manifestNo !== pm.code;
+    if (!pm.manifestId || mismatched) {
+      // เลขเต็มที่ระบบต่อเลขต้นให้ → ค้นด้วย 4 หลักท้าย (ลองทุกเลขต้น) · เลขที่พิมพ์มาเอง → ค้นตามเดิม
+      const last4 = pm.code.slice(-4);
+      const target = prefixes.some((p) => pm.code === p + last4) ? last4 : pm.code;
       const r = await replacePickupManifest(pm.id, target);
       if (r.error) sum.failed.push(`${pm.code}: ${r.error}`);
-      else if (target !== pm.code) sum.fixed.push(`${pm.code.slice(-4)} → ${target}`);
+      else if (pm.manifest) sum.fixed.push(`${pm.manifest.manifestNo} → ${pm.code}`);
       continue;
     }
     const t = await fetchManifestTrackings(pm.manifestId, { force: true });
@@ -528,7 +544,7 @@ async function refetchOne(pickupId: string, prefix: string, sum: RefetchSummary)
 const summaryText = (s: RefetchSummary) =>
   [
     `ดึงใหม่ ${s.manifests} ใบ${s.pickups > 1 ? ` จาก ${s.pickups} รอบรถ` : ""}${s.parcels ? ` · ${s.parcels} ชิ้น` : ""}`,
-    s.fixed.length && `แก้เลขต้น ${s.fixed.length} ใบ (${s.fixed.slice(0, 5).join(", ")}${s.fixed.length > 5 ? "…" : ""})`,
+    s.fixed.length && `จับคู่ใหม่ ${s.fixed.length} ใบ (${s.fixed.slice(0, 5).join(", ")}${s.fixed.length > 5 ? "…" : ""})`,
     s.failed.length && `ไม่สำเร็จ ${s.failed.length}: ${s.failed[0]}`,
   ]
     .filter(Boolean)
@@ -538,7 +554,7 @@ const summaryText = (s: RefetchSummary) =>
 export async function refetchPickupManifests(pickupId: string): Promise<{ ok: boolean; message: string }> {
   const user = await requirePickupAccess(pickupId);
   const sum: RefetchSummary = { pickups: 0, manifests: 0, fixed: [], failed: [], parcels: 0 };
-  await refetchOne(pickupId, await currentManifestPrefix(), sum);
+  await refetchOne(pickupId, await manifestPrefixCandidates(), sum);
   const message = summaryText(sum);
   audit(user, "manifest.refetch", "pickup", pickupId, message);
   revalidatePath("/", "layout");
@@ -550,9 +566,9 @@ export async function refetchRecentManifests(days: number): Promise<{ ok: boolea
   const user = await requireUser();
   const since = new Date(Date.now() - Math.min(Math.max(days, 1), 14) * 86_400_000);
   const pickups = await db.pickup.findMany({ where: { arrivedAt: { gte: since } }, orderBy: { arrivedAt: "asc" }, select: { id: true } });
-  const prefix = await currentManifestPrefix();
+  const prefixes = await manifestPrefixCandidates();
   const sum: RefetchSummary = { pickups: 0, manifests: 0, fixed: [], failed: [], parcels: 0 };
-  for (const p of pickups) await refetchOne(p.id, prefix, sum);
+  for (const p of pickups) await refetchOne(p.id, prefixes, sum);
   const message = pickups.length ? summaryText(sum) : "ไม่มีรอบรถในช่วงนี้";
   audit(user, "manifest.refetch", "manifest", null, `${days} วัน · ${message}`);
   revalidatePath("/", "layout");
