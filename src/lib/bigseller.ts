@@ -101,7 +101,8 @@ async function storeOnTruck(rows: ManifestRow[]) {
   const byNo = new Map<string, ManifestRow>();
   for (const r of rows) {
     const no = r.manifestNo ? String(r.manifestNo).toUpperCase() : "";
-    if (no && codes.some((c) => no === c || no.endsWith(c))) byNo.set(no, r);
+    // เลขเต็มที่ค้าง = เลขต้นที่เดาไว้ → เก็บทุกใบที่ 4 หลักท้ายตรงด้วย (ใบไหนไม่ได้จับคู่จะถูกลบทิ้งข้างล่าง)
+    if (no && codes.some((c) => no === c || no.endsWith(c) || (c.length >= 8 && no.endsWith(c.slice(-4))))) byNo.set(no, r);
   }
   const candidates = [...byNo.keys()];
 

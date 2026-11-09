@@ -190,10 +190,9 @@ export async function addPickupManifest(pickupId: string, raw: string) {
     // ใบเดียวกันจดซ้ำในงานเดียวกัน (เช่น พิมพ์ 8665 แล้วยิงเลขเต็มอีก) → ไม่รับ
     const same = await db.pickupManifest.findFirst({ where: { pickupId, manifestId: m.id } });
     if (same) return { error: `${m.manifestNo} จดในงานนี้แล้ว (เป็น “${same.code}”)` };
-  } else {
-    // ยังไม่รู้เลขต้น → จดตามที่พิมพ์ (4 หลัก) ไว้ก่อน BigSeller จะจับคู่ได้ทุกเลขต้น (เลขท้ายตรง)
-    code = input;
   }
+  // ไม่เจอ → จดเป็นเลขเต็มด้วยเลขต้นใหม่สุดไว้ก่อน (โชว์เลขเต็มได้เลย) · ตอนจับคู่ยังลองทุกเลขต้นด้วย 4 หลักท้าย
+  // แล้วแก้เป็นเลขจริงของใบที่เจอ (linkPendingPickupManifests)
 
   // จดเลขไว้ก่อน (ยังไม่มีใบ) → BigSeller เจอใบแล้วจะเก็บเฉพาะใบที่ตรงกับเลขที่จดไว้
   const pm = await db.pickupManifest.create({ data: { pickupId, code, manifestId: m?.id ?? null, addedBy: user.name } });
@@ -214,7 +213,7 @@ export async function addPickupManifest(pickupId: string, raw: string) {
     }
     // เลขเต็มที่พิมพ์มาเองแต่ BigSeller ไม่มี → สร้างใบเอง (ผูกกับรถคันนี้ทันที)
     // 4 หลักท้ายไม่สร้าง — ไม่รู้ว่าเลขต้นตัวไหนถูก (สร้างผิดตัว = ได้ใบปลอม) · รอ sync จับคู่ให้
-    if (!m && isFullManifestNo(code)) {
+    if (!m && !short && isFullManifestNo(code)) {
       m = await createManualManifest(code);
       await db.pickupManifest.update({ where: { id: pm.id }, data: { manifestId: m.id } });
     }
@@ -248,8 +247,8 @@ export async function addPickupManifest(pickupId: string, raw: string) {
   if (split) warnings.unshift(split);
 
   const size = t.expected != null && t.expected !== t.count ? `${t.count}/${t.expected} ชิ้น` : `${t.count} ชิ้น`;
-  const ok = `${code} → ${m.manifestNo} · ${size}${t.fetched ? "" : " (ข้อมูลที่เก็บไว้)"}`;
-  if (!t.ok) return { ok: `${code} → ${m.manifestNo}`, warn: `ดึงเลขแทร็คกิ้งไม่ได้: ${t.message.split("\n")[0]}` };
+  const ok = `${input} → ${m.manifestNo} · ${size}${t.fetched ? "" : " (ข้อมูลที่เก็บไว้)"}`;
+  if (!t.ok) return { ok: `${input} → ${m.manifestNo}`, warn: `ดึงเลขแทร็คกิ้งไม่ได้: ${t.message.split("\n")[0]}` };
   return warnings.length ? { ok, warn: warnings.join(" · ") } : { ok };
 }
 

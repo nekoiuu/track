@@ -102,7 +102,13 @@ export const expandManifestCode = (code: string) => {
 
 // เลข 4 หลักท้ายวนซ้ำได้ → จับคู่เฉพาะใบที่พิมพ์ในช่วงก่อนรถเข้า
 const LOOKBACK_MS = 7 * 86_400_000;
-const LOOKAHEAD_MS = 2 * 3_600_000;
+/**
+ * printTime ของ BigSeller เป็นเวลาไทยที่ส่งมาเหมือนเป็น UTC → printedAt ในเครื่องเร็วกว่าจริง 7 ชม.
+ * (เช่น ใบ MFG963110202 พิมพ์จริง 13:30 น. ≈ 06:30 UTC แต่เก็บเป็น 13:30 UTC — ถูกบันทึกลง DB ตอน 06:40 UTC)
+ * ขอบบนของช่วงจับคู่ต้องเผื่อ 7 ชม.นี้ ไม่งั้นใบที่เพิ่งพิมพ์ในรอบ ~7 ชม. ล่าสุดหาไม่เจอเลย
+ */
+const PRINT_TIME_SKEW_MS = 7 * 3_600_000;
+const LOOKAHEAD_MS = 2 * 3_600_000 + PRINT_TIME_SKEW_MS;
 
 /**
  * หาใบนำจ่ายที่ตรงกับเลขที่จด
@@ -125,9 +131,16 @@ export async function linkPendingPickupManifests() {
 
   const manifestIds = new Set<string>();
   for (const pm of pending) {
-    const m = await findManifestByCode(pm.code, pm.pickup, pm.pickupId);
+    // เลขเต็มที่ยังค้าง = เลขต้นที่ระบบเดาไว้ (เลขเต็มที่พิมพ์มาเองไม่ค้าง — สร้างใบเองทันที)
+    // → ตรงตัวไม่เจอ ลอง 4 หลักท้ายทุกเลขต้น (เช่น เดา MFG963110209 แต่ใบจริงคือ MFG963100209)
+    const m =
+      (await findManifestByCode(pm.code, pm.pickup, pm.pickupId)) ??
+      (isFullManifestNo(pm.code) ? await findManifestByCode(pm.code.slice(-4), pm.pickup, pm.pickupId) : null);
     if (!m) continue;
-    await db.pickupManifest.update({ where: { id: pm.id }, data: { manifestId: m.id } });
+    // เลขที่โชว์ = เลขจริงของใบ (ถ้าไม่ชนกับรายการอื่นในรอบเดียวกัน)
+    const clash = m.manifestNo !== pm.code && (await db.pickupManifest.findFirst({ where: { pickupId: pm.pickupId, code: m.manifestNo } }));
+    const code = isFullManifestNo(pm.code) && !clash ? m.manifestNo : pm.code;
+    await db.pickupManifest.update({ where: { id: pm.id }, data: { manifestId: m.id, code } });
     manifestIds.add(m.id);
   }
   return { pending: pending.length, linked: manifestIds.size, manifestIds: [...manifestIds] };
