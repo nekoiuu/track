@@ -177,14 +177,14 @@ export async function addPickupManifest(pickupId: string, raw: string) {
   const guesses = prefixes.length ? prefixes.map((p) => p + input) : [input];
   let code = guesses[0];
 
-  const pickup = await db.pickup.findUnique({ where: { id: pickupId }, select: { arrivedAt: true } });
+  const pickup = await db.pickup.findUnique({ where: { id: pickupId }, select: { arrivedAt: true, departedAt: true } });
   if (!pickup) return { error: "ไม่พบงานนี้" };
 
   const exists = await db.pickupManifest.findFirst({ where: { pickupId, code: { in: [...new Set([input, ...guesses])] } } });
   if (exists) return { error: `${exists.code} จดไว้แล้ว` };
 
   // ในเครื่องเก็บเฉพาะใบที่ขึ้นรถแล้ว (เช่น ใบที่แบ่งกับรถคันอื่น) — ไม่เจอ → ถาม BigSeller
-  let m = await findManifestByGuesses(guesses, pickup.arrivedAt, pickupId);
+  let m = await findManifestByGuesses(guesses, pickup, pickupId);
   if (m) {
     code = m.manifestNo;
     // ใบเดียวกันจดซ้ำในงานเดียวกัน (เช่น พิมพ์ 8665 แล้วยิงเลขเต็มอีก) → ไม่รับ
@@ -205,7 +205,7 @@ export async function addPickupManifest(pickupId: string, raw: string) {
     if (short) {
       // จดเป็น 4 หลัก → เลือกใบตามลำดับเลขต้น แล้วเก็บเลขเต็มของใบที่เจอจริง
       // BigSeller จับคู่ด้วยเลขท้ายไปแล้ว (m) — ใช้ตามนั้น ถ้าไม่ได้ ค่อยลองตามเลขต้น
-      if (!m) m = await findManifestByGuesses(guesses, pickup.arrivedAt, pickupId);
+      if (!m) m = await findManifestByGuesses(guesses, pickup, pickupId);
       if (m) {
         code = m.manifestNo;
         const clash = await db.pickupManifest.findFirst({ where: { pickupId, code, id: { not: pm.id } } });

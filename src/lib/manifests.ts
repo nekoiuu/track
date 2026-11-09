@@ -58,14 +58,23 @@ function prevPrefix(prefix: string) {
  * จด 4 หลักท้าย → หาใบในเครื่องที่ตรงกับเลขต้นตัวใดตัวหนึ่ง (พิมพ์ภายใน 7 วันก่อนรถเข้า ใบล่าสุดก่อน)
  * เลขเต็ม → ตรงตัว
  */
-export async function findManifestByGuesses(guesses: string[], at: Date, pickupId?: string) {
+export async function findManifestByGuesses(guesses: string[], at: PickupTime, pickupId?: string) {
   if (guesses.length === 1) return findManifestByCode(guesses[0], at, pickupId);
   return pickBest({ manifestNo: { in: guesses }, ...inWindow(at) }, pickupId);
 }
 
-const inWindow = (at: Date) => ({
-  OR: [{ printedAt: { gte: new Date(at.getTime() - LOOKBACK_MS), lte: new Date(at.getTime() + LOOKAHEAD_MS) } }, { printedAt: null }],
-});
+/** เวลาของรอบรถ — Date เดียว = เวลารถเข้า (รอบที่ยังเปิดอยู่) */
+type PickupTime = Date | { arrivedAt: Date; departedAt?: Date | null };
+
+/**
+ * ช่วงเวลาพิมพ์ใบที่นับว่าเป็นของรอบรถนี้: 7 วันก่อนรถเข้า → 2 ชม. หลังปิดงาน (ยังไม่ปิด = ถึงตอนนี้)
+ * เดิมนับแค่ 2 ชม. หลังรถเข้า → รอบที่เปิดไว้ทั้งวัน ใบที่พิมพ์ตอนบ่ายหาไม่เจอ
+ */
+const inWindow = (t: PickupTime) => {
+  const { arrivedAt, departedAt } = t instanceof Date ? { arrivedAt: t, departedAt: null } : t;
+  const end = Math.max(arrivedAt.getTime(), (departedAt ?? new Date()).getTime()) + LOOKAHEAD_MS;
+  return { OR: [{ printedAt: { gte: new Date(arrivedAt.getTime() - LOOKBACK_MS), lte: new Date(end) } }, { printedAt: null }] };
+};
 
 /**
  * เลขท้ายซ้ำกันหลายใบ (เช่น MFG963102678 กับ MFG963112678) → เลือกเองไม่ต้องให้คนพิมพ์เลขเต็ม
@@ -98,9 +107,9 @@ const LOOKAHEAD_MS = 2 * 3_600_000;
 /**
  * หาใบนำจ่ายที่ตรงกับเลขที่จด
  * - เลขเต็ม → ตรงตัว
- * - เลขท้าย → ใบล่าสุดที่เลขท้ายตรงและพิมพ์ภายใน 7 วันก่อน `at` (ใบที่สร้างเอง ไม่มีเวลาพิมพ์ ก็นับ)
+ * - เลขท้าย → ใบล่าสุดที่เลขท้ายตรงและพิมพ์ภายใน 7 วันก่อนรถเข้า ถึง 2 ชม. หลังปิดงาน (ใบที่สร้างเอง ไม่มีเวลาพิมพ์ ก็นับ)
  */
-export async function findManifestByCode(code: string, at: Date = new Date(), pickupId?: string) {
+export async function findManifestByCode(code: string, at: PickupTime = new Date(), pickupId?: string) {
   if (isFullManifestNo(code)) {
     return db.manifest.findUnique({ where: { manifestNo: code } });
   }
@@ -111,12 +120,12 @@ export async function findManifestByCode(code: string, at: Date = new Date(), pi
 export async function linkPendingPickupManifests() {
   const pending = await db.pickupManifest.findMany({
     where: { manifestId: null },
-    include: { pickup: { select: { arrivedAt: true } } },
+    include: { pickup: { select: { arrivedAt: true, departedAt: true } } },
   });
 
   const manifestIds = new Set<string>();
   for (const pm of pending) {
-    const m = await findManifestByCode(pm.code, pm.pickup.arrivedAt, pm.pickupId);
+    const m = await findManifestByCode(pm.code, pm.pickup, pm.pickupId);
     if (!m) continue;
     await db.pickupManifest.update({ where: { id: pm.id }, data: { manifestId: m.id } });
     manifestIds.add(m.id);
