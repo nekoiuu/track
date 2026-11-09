@@ -1,5 +1,6 @@
 import "server-only";
 import { db } from "./db";
+import type { Prisma } from "@/generated/prisma/client";
 
 /** เลขเต็มของใบนำจ่าย (เช่น MFG963072007) — สั้นกว่านี้ถือว่าเป็นเลขท้ายที่จดมา */
 export const isFullManifestNo = (code: string) => code.length >= 8;
@@ -26,33 +27,62 @@ export async function currentManifestPrefix() {
  */
 export async function manifestPrefixCandidates() {
   const env = getManifestPrefix();
-  const latest = await db.manifest.findFirst({
-    where: { source: "bigseller" },
+  // เลขต้นของใบจาก BigSeller ที่พิมพ์ช่วงนี้ (ไม่ใช่แค่ใบล่าสุดใบเดียว) — 96310 / 96311 สลับกันมาได้
+  const recent = await db.manifest.findMany({
+    where: { source: "bigseller", OR: [{ printedAt: { gte: new Date(Date.now() - LOOKBACK_MS) } }, { printedAt: null }] },
     orderBy: [{ printedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    take: 200,
     select: { manifestNo: true },
   });
-  const fromDb = latest && latest.manifestNo.length > 4 ? latest.manifestNo.slice(0, -4).toUpperCase() : "";
-  // เลขยาวเท่ากัน → เทียบตัวอักษรได้เลย (เลขมากกว่า = ใหม่กว่า)
-  const newestFirst = fromDb && env && fromDb.length === env.length && fromDb > env ? [fromDb, env] : [env, fromDb];
-  return [...new Set(newestFirst.filter(Boolean))];
+  const set = new Set<string>();
+  if (env) set.add(env);
+  for (const r of recent) if (r.manifestNo.length > 4) set.add(r.manifestNo.slice(0, -4).toUpperCase());
+  // ลองเลขต้นที่ต่ำกว่าตัวใหม่สุด 1 ด้วย (เช่น มี 96311 แล้ว → ลอง 96310) — กันกรณี .env ไม่ได้ตั้ง/ตั้งเก่า
+  const sorted = [...set].sort(comparePrefixDesc);
+  const below = sorted[0] && prevPrefix(sorted[0]);
+  if (below) set.add(below);
+  return [...set].sort(comparePrefixDesc);
+}
+
+/** ใหม่กว่าก่อน — ยาวเท่ากันเทียบตัวอักษร (เลขมากกว่า = ใหม่กว่า) */
+const comparePrefixDesc = (a: string, b: string) => b.length - a.length || (a < b ? 1 : a > b ? -1 : 0);
+
+/** "MFG96311" → "MFG96310" (เลขท้ายของเลขต้นลบ 1 ความยาวเท่าเดิม) · ทำไม่ได้ = null */
+function prevPrefix(prefix: string) {
+  const m = prefix.match(/^(.*?)(\d+)$/);
+  if (!m || /^0+$/.test(m[2])) return null;
+  return m[1] + String(BigInt(m[2]) - BigInt(1)).padStart(m[2].length, "0");
 }
 
 /**
  * จด 4 หลักท้าย → หาใบในเครื่องที่ตรงกับเลขต้นตัวใดตัวหนึ่ง (พิมพ์ภายใน 7 วันก่อนรถเข้า ใบล่าสุดก่อน)
  * เลขเต็ม → ตรงตัว
  */
-export async function findManifestByGuesses(guesses: string[], at: Date) {
-  if (guesses.length === 1) return findManifestByCode(guesses[0], at);
-  return db.manifest.findFirst({
-    where: {
-      manifestNo: { in: guesses },
-      OR: [
-        { printedAt: { gte: new Date(at.getTime() - LOOKBACK_MS), lte: new Date(at.getTime() + LOOKAHEAD_MS) } },
-        { printedAt: null },
-      ],
-    },
+export async function findManifestByGuesses(guesses: string[], at: Date, pickupId?: string) {
+  if (guesses.length === 1) return findManifestByCode(guesses[0], at, pickupId);
+  return pickBest({ manifestNo: { in: guesses }, ...inWindow(at) }, pickupId);
+}
+
+const inWindow = (at: Date) => ({
+  OR: [{ printedAt: { gte: new Date(at.getTime() - LOOKBACK_MS), lte: new Date(at.getTime() + LOOKAHEAD_MS) } }, { printedAt: null }],
+});
+
+/**
+ * เลขท้ายซ้ำกันหลายใบ (เช่น MFG963102678 กับ MFG963112678) → เลือกเองไม่ต้องให้คนพิมพ์เลขเต็ม
+ * ใบที่ยังไม่ขึ้นรถคันอื่นก่อน (ใบที่ขึ้นรถไปแล้วมักไม่ใช่ใบที่เพิ่งยิง) แล้วค่อยเอาใบที่พิมพ์ล่าสุด
+ */
+async function pickBest(where: Prisma.ManifestWhereInput, pickupId?: string) {
+  const list = await db.manifest.findMany({
+    where,
     orderBy: [{ printedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    take: 10,
+    include: { _count: { select: { pickups: pickupId ? { where: { pickupId: { not: pickupId } } } : true } } },
   });
+  const best = list.find((m) => m._count.pickups === 0) ?? list[0];
+  if (!best) return null;
+  const { _count, ...manifest } = best;
+  void _count;
+  return manifest;
 }
 
 /** "8839" → "MFG963088839" (ถ้าตั้ง prefix ไว้) · เลขอื่นคืนตามเดิม */
@@ -70,20 +100,11 @@ const LOOKAHEAD_MS = 2 * 3_600_000;
  * - เลขเต็ม → ตรงตัว
  * - เลขท้าย → ใบล่าสุดที่เลขท้ายตรงและพิมพ์ภายใน 7 วันก่อน `at` (ใบที่สร้างเอง ไม่มีเวลาพิมพ์ ก็นับ)
  */
-export async function findManifestByCode(code: string, at: Date = new Date()) {
+export async function findManifestByCode(code: string, at: Date = new Date(), pickupId?: string) {
   if (isFullManifestNo(code)) {
     return db.manifest.findUnique({ where: { manifestNo: code } });
   }
-  return db.manifest.findFirst({
-    where: {
-      ...(code.length === 4 ? { last4: code } : { manifestNo: { endsWith: code } }),
-      OR: [
-        { printedAt: { gte: new Date(at.getTime() - LOOKBACK_MS), lte: new Date(at.getTime() + LOOKAHEAD_MS) } },
-        { printedAt: null },
-      ],
-    },
-    orderBy: [{ printedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-  });
+  return pickBest({ ...(code.length === 4 ? { last4: code } : { manifestNo: { endsWith: code } }), ...inWindow(at) }, pickupId);
 }
 
 /** จับคู่ PickupManifest ที่ยังค้างอยู่ — เรียกหลัง sync ทุกครั้ง */
@@ -95,7 +116,7 @@ export async function linkPendingPickupManifests() {
 
   const manifestIds = new Set<string>();
   for (const pm of pending) {
-    const m = await findManifestByCode(pm.code, pm.pickup.arrivedAt);
+    const m = await findManifestByCode(pm.code, pm.pickup.arrivedAt, pm.pickupId);
     if (!m) continue;
     await db.pickupManifest.update({ where: { id: pm.id }, data: { manifestId: m.id } });
     manifestIds.add(m.id);
