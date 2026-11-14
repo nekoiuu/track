@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useActionState, useOptimistic, useRef, useState, useTransition } from "react";
+import { type ReactNode, useActionState, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowRightLeftIcon, CheckCircle2Icon, EllipsisIcon, HashIcon, LockIcon, LockOpenIcon, Loader2Icon, MessageSquareTextIcon, MinusIcon, PencilIcon, PlusIcon, RotateCcwIcon, SplitIcon, Trash2Icon } from "lucide-react";
+import { ArrowRightLeftIcon, BanIcon, CheckCircle2Icon, EllipsisIcon, HashIcon, LockIcon, LockOpenIcon, Loader2Icon, MessageSquareTextIcon, MinusIcon, PencilIcon, PlusIcon, RotateCcwIcon, SplitIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "cn";
 import {
@@ -11,7 +12,9 @@ import {
   closeCage,
   closePickup,
   movePickupManifestCage,
+  pollPickupCancels,
   renamePickupCage,
+  setPickupCageDone,
   reopenCage,
   setCageShare,
   removePickupManifest,
@@ -76,7 +79,57 @@ export type CageInfo = {
   share: number | null;
   count: number | null;
   others: { plate: string; share: number | null; count: number | null; doing?: boolean }[];
+  /** ออเดอร์ที่ยกเลิกในกรงนี้ — ต้องหยิบออกก่อนขึ้นรถ */
+  cancelled?: { trackingNo: string; orderNo: string | null }[];
+  /** กด "ขนหมดแล้ว" — ใบในกรงนี้จดเข้ารถคันอื่นอีกไม่ได้ · at = เวลา (จัดรูปแบบแล้ว) */
+  done?: { by: string | null; at: string } | null;
 };
+
+/** เช็คยกเลิกทุกเท่านี้ (server ล็อกรอบไว้ — หลายเครื่องเปิดพร้อมกันก็ยิง BigSeller แค่ 1 รอบ) */
+const CANCEL_POLL_MS = 30_000;
+
+/**
+ * งานที่กำลังทำ: เช็คออเดอร์ยกเลิกเงียบ ๆ ทุก 30 วิ ตอนหน้านี้เปิดอยู่บนจอ
+ * ไม่มี spinner ไม่มี toast ตอนปกติ · โหลดหน้าใหม่เฉพาะตอนจำนวนยกเลิกเปลี่ยน
+ */
+function useCancelWatch(pickupId: string, enabled: boolean, count: number) {
+  const router = useRouter();
+  const known = useRef(count);
+  // หน้าโหลดใหม่แล้ว (นับจาก server) → ใช้ค่านั้นเป็นฐาน
+  useEffect(() => {
+    known.current = count;
+  }, [count]);
+  useEffect(() => {
+    if (!enabled) return;
+    let busy = false;
+    const tick = async () => {
+      if (busy || document.visibilityState !== "visible") return;
+      busy = true;
+      try {
+        const res = await pollPickupCancels(pickupId);
+        if (res.cancelled !== known.current) {
+          if (res.cancelled > known.current) toast.warning(`มีออเดอร์ยกเลิกเพิ่ม ${res.cancelled - known.current} ชิ้น — ดูที่กรง แล้วหยิบออก`, { duration: 15_000 });
+          known.current = res.cancelled;
+          router.refresh();
+        }
+      } catch {
+        // เน็ตหลุด / หมดเวลา → รอรอบหน้า ไม่กวนคนจด
+      } finally {
+        busy = false;
+      }
+    };
+    const first = setTimeout(tick, 3_000);
+    const timer = setInterval(tick, CANCEL_POLL_MS);
+    // กลับมาที่หน้านี้ (สลับแอป/เปิดจอ) → เช็คเลย ไม่ต้องรอครบรอบ
+    const onVisible = () => document.visibilityState === "visible" && tick();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [pickupId, enabled, router]);
+}
 
 /** ช่องจด manifest — เพิ่มแล้วโผล่ทันที (optimistic) แล้วระบบไปดึงจาก BigSeller ว่ามีพัสดุอะไร */
 export function ManifestScanner({
@@ -85,13 +138,17 @@ export function ManifestScanner({
   editable,
   prefix,
   cages = [],
+  cancelledCount = 0,
 }: {
   pickupId: string;
   items: ManifestChip[];
   editable: boolean;
   prefix?: string;
   cages?: CageInfo[];
+  /** ชิ้นที่ยกเลิกทั้งงานตอนโหลดหน้า — ใช้เทียบว่ามียกเลิกใหม่ไหม */
+  cancelledCount?: number;
 }) {
+  useCancelWatch(pickupId, editable, cancelledCount);
   const [draft, setDraft] = useState("");
   const [, startTransition] = useTransition();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -254,6 +311,36 @@ const shareText = (s: { share: number | null; count: number | null }, alone: boo
  * การ์ดกรง — หัวการ์ดบอกว่าคันนี้เอาไปเท่าไหร่ กดปุ่มใหญ่เลือกได้เลย (ทั้งกรง / ¾ / ½ / ¼ / นับได้ / ที่เหลือ)
  * ระบบกระจายจำนวนลงแต่ละใบให้เอง ตามขนาดของใบ
  */
+/** แสดงก่อน 3 เลข ที่เหลือกดดู — กรงใหญ่ยกเลิกหลายชิ้นจะได้ไม่ดันการ์ดยาว */
+const CANCELLED_PREVIEW = 3;
+
+/** ออเดอร์ที่ยกเลิกในกรง — เลขแทร็คตัวใหญ่ ให้หาบนกล่องแล้วหยิบออก */
+function CancelledInCage({ items }: { items: { trackingNo: string; orderNo: string | null }[] }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, CANCELLED_PREVIEW);
+  return (
+    <div role="alert" className="mb-2.5 rounded-xl border border-error/40 bg-error-soft/40 px-3 py-2.5">
+      <p className="flex items-center gap-1.5 text-sm font-semibold text-error-deep">
+        <BanIcon className="size-4 shrink-0" />
+        ยกเลิก {items.length} ชิ้น — หยิบออกจากกรงนี้
+      </p>
+      <ul className="mt-1.5 grid gap-1">
+        {shown.map((p) => (
+          <li key={p.trackingNo} className="flex min-w-0 items-baseline gap-2">
+            <span className="font-mono text-base font-semibold tracking-tight text-ink">{p.trackingNo}</span>
+            {p.orderNo && <span className="truncate font-mono text-xs text-mute">#{p.orderNo}</span>}
+          </li>
+        ))}
+      </ul>
+      {items.length > CANCELLED_PREVIEW && (
+        <button type="button" onClick={() => setAll((v) => !v)} className="mt-1 h-8 text-xs font-medium text-error-deep hover:underline">
+          {all ? "ย่อ" : `ดูอีก ${items.length - CANCELLED_PREVIEW} ชิ้น`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CageCard({
   pickupId,
   cage,
@@ -366,6 +453,8 @@ function CageCard({
         </div>
       </header>
 
+      {cage.cancelled && cage.cancelled.length > 0 && <CancelledInCage items={cage.cancelled} />}
+
       {renaming && (
         <div className="mb-3 grid grid-cols-[1fr_auto] gap-2">
           <Input
@@ -470,6 +559,36 @@ function CageCard({
               className="flex h-10 items-center gap-1.5 px-1 text-sm text-mute hover:text-ink"
             >
               <LockOpenIcon className="size-4" /> ยิงต่อลงกรงนี้
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ขนหมดแล้ว — ปิดทางจดใบในกรงนี้ซ้ำเข้ารถคันอื่น (กรงที่แบ่งกับคันอื่นด้วย ทุกคันที่อยู่ในกรงกดได้) */}
+      {editable && cage.id !== "new" && real.length > 0 && (
+        <div className="mt-2">
+          {cage.done ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-ink/5 px-3 py-2">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-ink">
+                <CheckCircle2Icon className="size-4 text-success" />
+                ขนหมดแล้ว · จดใบในกรงนี้ซ้ำไม่ได้
+                <span className="text-xs font-normal text-mute">
+                  {cage.done.by ? `${cage.done.by} ` : ""}
+                  {cage.done.at}
+                </span>
+              </p>
+              <button type="button" disabled={pending} onClick={() => run(() => setPickupCageDone(pickupId, cage.id, false))} className="h-8 text-xs text-mute hover:text-ink">
+                ยังเหลือของ
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => run(() => setPickupCageDone(pickupId, cage.id, true))}
+              className="flex h-10 items-center gap-1.5 px-1 text-sm text-mute hover:text-ink"
+            >
+              <CheckCircle2Icon className="size-4" /> ของในกรงนี้ขนหมดแล้ว (กันจดซ้ำ)
             </button>
           )}
         </div>

@@ -17,7 +17,7 @@ export { BASE_URL, DELAY_MS, CHUNK_SIZE, RETRIES, ENV_PATH, cookieNames, parseCo
 export { getCookie, setCookie, onCookieChange } from './core/cookie-jar.js';
 
 // ------------------------------------------------------------------ endpoint
-export { searchOrders, searchOrdersBatch } from './endpoints/search-orders/index.js';
+export { searchOrders, searchOrdersBatch, searchCancelledOrders } from './endpoints/search-orders/index.js';
 export { getStatusCount }                  from './endpoints/order-status-count/index.js';
 export { getFilterList }                   from './endpoints/filter-list/index.js';
 export { getLogisticsServices }            from './endpoints/logistics-services/index.js';
@@ -56,7 +56,7 @@ export { pickPage, fetchAllPages, MAX_PAGES } from './endpoints/_shared/page.js'
 export { skuOf, SKU_FIELDS }                  from './endpoints/_shared/sku.js';
 
 // -------------------------------------------------- รวมเป็นก้อนเดียวไว้ import สั้น ๆ
-import { searchOrders, searchOrdersBatch } from './endpoints/search-orders/index.js';
+import { searchOrders, searchOrdersBatch, searchCancelledOrders } from './endpoints/search-orders/index.js';
 import { getStatusCount }                  from './endpoints/order-status-count/index.js';
 import { getFilterList }                   from './endpoints/filter-list/index.js';
 import { getLogisticsServices }            from './endpoints/logistics-services/index.js';
@@ -81,6 +81,7 @@ import { searchReturns, findReturns }    from './endpoints/return-in-warehouse/i
 export default {
   searchOrders,
   searchOrdersBatch,
+  searchCancelledOrders,
   getStatusCount,
   getFilterList,
   getLogisticsServices,

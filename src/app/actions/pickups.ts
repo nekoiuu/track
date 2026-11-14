@@ -7,11 +7,12 @@ import { after } from "next/server";
 import { db } from "@/lib/db";
 import { fmtDateTime, fromLocalInput, normalizeCode } from "@/lib/format";
 import { createManualManifest, deleteManifestsWithoutPickup, findManifestByGuesses, isFullManifestNo, manifestPrefixCandidates } from "@/lib/manifests";
-import { fetchManifestTrackings, refreshManifestsIfStale } from "@/lib/bigseller";
+import { fetchManifestTrackings, refreshManifestsIfStale, watchDoingCancels } from "@/lib/bigseller";
+import { BS_CANCELLED_STATES } from "@/lib/tracking";
 import { notifyPickupClosed } from "@/lib/line-messages";
 import { refreshPickupStatuses } from "@/lib/status-report";
 import { lineConfigured } from "@/lib/line";
-import { applyCageShares, moveToCage, placeInCage, renameCage, tidyCage } from "@/lib/cages";
+import { applyCageShares, duplicateBlockReason, markCageDone, moveToCage, placeInCage, renameCage, tidyCage } from "@/lib/cages";
 import { canAccessPickup, requirePickupAccess, requirePickupManifestAccess } from "@/lib/pickup-access";
 
 export type FormState = { error?: string; message?: string } | undefined;
@@ -190,6 +191,9 @@ export async function addPickupManifest(pickupId: string, raw: string) {
     // ใบเดียวกันจดซ้ำในงานเดียวกัน (เช่น พิมพ์ 8665 แล้วยิงเลขเต็มอีก) → ไม่รับ
     const same = await db.pickupManifest.findFirst({ where: { pickupId, manifestId: m.id } });
     if (same) return { error: `${m.manifestNo} จดในงานนี้แล้ว (เป็น “${same.code}”)` };
+    // อยู่กับรถคันอื่นแล้ว — แบ่งรถจริงรับ · กรงขนหมดแล้ว / รถคันนั้นรับไปครบแล้ว ไม่รับ
+    const blocked = await duplicateBlockReason(m.id, pickupId);
+    if (blocked) return { error: blocked };
   }
   // ไม่เจอ → จดเป็นเลขเต็มด้วยเลขต้นใหม่สุดไว้ก่อน (โชว์เลขเต็มได้เลย) · ตอนจับคู่ยังลองทุกเลขต้นด้วย 4 หลักท้าย
   // แล้วแก้เป็นเลขจริงของใบที่เจอ (linkPendingPickupManifests)
@@ -222,6 +226,11 @@ export async function addPickupManifest(pickupId: string, raw: string) {
       if (same) {
         await db.pickupManifest.delete({ where: { id: pm.id } });
         return { error: `${m.manifestNo} จดในงานนี้แล้ว (เป็น “${same.code}”)` };
+      }
+      const blocked = await duplicateBlockReason(m.id, pickupId);
+      if (blocked) {
+        await db.pickupManifest.delete({ where: { id: pm.id } });
+        return { error: blocked };
       }
     }
   }
@@ -448,7 +457,8 @@ export async function reopenCage(pickupId: string, cageId: string): Promise<Mani
   const cage = await db.cage.findUnique({ where: { id: cageId }, select: { label: true, originPickupId: true } });
   if (!cage || cage.originPickupId !== pickupId) return { error: "เปิดได้เฉพาะกรงที่เริ่มในรถคันนี้" };
   await db.cage.updateMany({ where: { originPickupId: pickupId, closedAt: null, id: { not: cageId } }, data: { closedAt: new Date() } });
-  await db.cage.update({ where: { id: cageId }, data: { closedAt: null } });
+  // เปิดยิงต่อ = ยังมีของเพิ่ม → ไม่ใช่ "ขนหมดแล้ว"
+  await db.cage.update({ where: { id: cageId }, data: { closedAt: null, doneAt: null, doneBy: null } });
   audit(user, "cage.reopen", "pickup", pickupId, cage.label);
   revalidatePath(`/pickups/${pickupId}`);
   return { ok: `ยิงต่อลงกรง ${cage.label}` };
@@ -493,6 +503,20 @@ export async function movePickupManifestCage(pmId: string, target: string): Prom
 }
 
 /** ตั้งชื่อกรงเอง */
+/**
+ * กด "ขนหมดแล้ว" — ของในกรงขึ้นรถไปครบ → ใบในกรงนี้จดเข้ารถคันอื่นอีกไม่ได้ · done=false = ยกเลิก (กดผิด / ยังเหลือของ)
+ */
+export async function setPickupCageDone(pickupId: string, cageId: string, done: boolean): Promise<ManifestActionResult> {
+  const user = await requirePickupAccess(pickupId);
+  // กรงต้องอยู่ในรอบรถคันนี้ (เหมือน setCageShare)
+  const inPickup = await db.pickupCage.findUnique({ where: { pickupId_cageId: { pickupId, cageId } }, select: { id: true } });
+  if (!inPickup) return { error: "รถคันนี้ไม่ได้อยู่ในกรงนั้น" };
+  const cage = await markCageDone(cageId, done, user.name);
+  audit(user, done ? "cage.done" : "cage.undone", "pickup", pickupId, `กรง ${cage.label}`);
+  revalidatePath("/", "layout");
+  return { ok: done ? `กรง ${cage.label} ขนหมดแล้ว — ใบในกรงนี้จดซ้ำไม่ได้แล้ว` : `กรง ${cage.label} ยังเหลือของ — จดใบในกรงนี้ได้อีก` };
+}
+
 export async function renamePickupCage(pickupId: string, cageId: string, label: string): Promise<ManifestActionResult> {
   const user = await requirePickupAccess(pickupId);
   // กรงต้องอยู่ในรอบรถคันนี้ — ไม่งั้นส่ง cageId ของงานคนอื่นมาเปลี่ยนชื่อได้ (เหมือน setCageShare)
@@ -572,4 +596,21 @@ export async function refetchRecentManifests(days: number): Promise<{ ok: boolea
   audit(user, "manifest.refetch", "manifest", null, `${days} วัน · ${message}`);
   revalidatePath("/", "layout");
   return { ok: sum.failed.length === 0, message };
+}
+
+// ─────────────────────────────────────────────── เฝ้าออเดอร์ยกเลิก (หน้างานเรียกเองทุก 30 วิ)
+
+/**
+ * หน้างานที่กำลังทำเรียกเงียบ ๆ เป็นระยะ — ไม่มี toast ไม่ revalidate
+ * ยิง BigSeller จริงไม่เกินทุก 30 วิ รวมทุกเครื่องทุกงาน (watchDoingCancels ล็อกรอบไว้)
+ * @returns cancelled = ชิ้นที่ยกเลิกในงานนี้ตอนนี้ → หน้าเว็บโหลดใหม่เฉพาะตอนตัวเลขเปลี่ยน
+ */
+export async function pollPickupCancels(pickupId: string): Promise<{ cancelled: number; error?: string }> {
+  await requirePickupAccess(pickupId);
+  const pickup = await db.pickup.findUnique({ where: { id: pickupId }, select: { status: true } });
+  const res = pickup?.status === "DOING" ? await watchDoingCancels().catch((e) => ({ ran: false, found: 0, error: String(e?.message ?? e) })) : null;
+  const cancelled = await db.manifestParcel.count({
+    where: { bsState: { in: BS_CANCELLED_STATES }, manifest: { pickups: { some: { pickupId } } } },
+  });
+  return { cancelled, ...(res?.error ? { error: res.error } : {}) };
 }

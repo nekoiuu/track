@@ -89,6 +89,50 @@ export async function placeInCage(pmId: string, pickupId: string, manifestId: st
   return `ใบนี้อยู่ในกรง ${cage?.label ?? ""} ที่แบ่งกับ ${plates} — ระบบแบ่งให้คร่าว ๆ ก่อน (คันที่ยังไม่เลือกได้ "ที่เหลือ" เฉลี่ยกัน)${added ? ` · เพิ่มอีก ${added} ใบในกรงให้แล้ว` : ""} · กดเลือก ทั้งกรง/½/นับได้ ที่การ์ดกรง`;
 }
 
+/**
+ * ใบที่อยู่กับรถคันอื่นแล้ว — จดซ้ำเข้ารถคันนี้ได้ไหม (แบ่งรถจริง vs ยิงผิด)
+ * - กรงของใบนี้ถูกกด "ขนหมดแล้ว" → ไม่ได้
+ * - รถคันอื่นที่ปิดงานไปแล้วรับไปครบทุกชิ้น (ไม่ได้แบ่ง = ทั้งใบ) → ไม่ได้
+ * - รถคันอื่นยังทำงานอยู่ / แบ่งไว้แล้วยังมีของเหลือ → ได้ (แบ่งรถตามปกติ)
+ * @returns เหตุผลที่ไม่รับ · null = รับได้
+ */
+export async function duplicateBlockReason(manifestId: string, pickupId: string): Promise<string | null> {
+  const others = await db.pickupManifest.findMany({
+    where: { manifestId, pickupId: { not: pickupId } },
+    select: {
+      parcelCount: true,
+      pickup: { select: { plate: true, status: true } },
+      cage: { select: { label: true, doneAt: true, doneBy: true } },
+    },
+  });
+  if (!others.length) return null;
+
+  const done = others.find((o) => o.cage?.doneAt);
+  if (done?.cage) {
+    const by = done.cage.doneBy ? ` โดย ${done.cage.doneBy}` : "";
+    return `ใบนี้อยู่กรง ${done.cage.label} ที่กด “ขนหมดแล้ว”${by} (ไปกับรถ ${done.pickup.plate}) — จดซ้ำไม่ได้`;
+  }
+
+  // รถที่ปิดงานออกไปแล้ว รับไปรวมกี่ชิ้น (ไม่ได้ใส่จำนวน = ทั้งใบ)
+  const gone = others.filter((o) => o.pickup.status === "DONE");
+  if (!gone.length) return null;
+  const size = (await sizesOf([manifestId])).get(manifestId) ?? 0;
+  if (!size) return null;
+  const taken = gone.reduce((n, o) => n + (o.parcelCount ?? size), 0);
+  if (taken < size) return null;
+  const plates = [...new Set(gone.map((o) => o.pickup.plate))].join(", ");
+  return `ใบนี้ขึ้นรถ ${plates} ไปครบแล้ว (${Math.min(taken, size)}/${size} ชิ้น) — จดซ้ำไม่ได้ · ถ้าแบ่งรถจริง ให้แก้จำนวนที่รถคันนั้นรับก่อน`;
+}
+
+/** กด "ขนหมดแล้ว" / ยกเลิก — ขนหมดแล้วปิดกรงด้วย (ใบถัดไปขึ้นกรงใหม่) */
+export async function markCageDone(cageId: string, done: boolean, by?: string) {
+  return db.cage.update({
+    where: { id: cageId },
+    data: done ? { doneAt: new Date(), doneBy: by ?? null, closedAt: new Date() } : { doneAt: null, doneBy: null },
+    select: { label: true },
+  });
+}
+
 /** จำนวนชิ้นของแต่ละใบในกรง (ตามเลขแทร็คที่ดึงมา ไม่มีใช้จำนวนตาม BigSeller) */
 async function sizesOf(manifestIds: string[]) {
   const rows = await db.manifest.findMany({ where: { id: { in: manifestIds } }, select: { id: true, parcelCount: true, _count: { select: { parcels: true } } } });

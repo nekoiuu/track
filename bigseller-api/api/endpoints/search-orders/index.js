@@ -52,6 +52,40 @@ export async function searchOrders(orderNos, opt = {}) {
  * @param {object} [opt] ส่งต่อให้ searchOrders
  * @returns {Promise<{rows:object[], missing:string[]}>}
  */
+/** เลขที่ค้นได้ต่อ 1 request — เกินนี้ BigSeller ตอบ "สามารถป้อนคำค้นหาได้สูงสุด 3000 คำ" (ยิงจริง 13 พ.ย. 2026) */
+export const MAX_SEARCH_TERMS = 3000;
+/** pageSize สูงสุดที่ได้จริง — ขอมากกว่านี้ก็ได้แค่ 300 แถว/หน้า */
+export const MAX_ROWS_PER_PAGE = 300;
+
+/**
+ * เฉพาะออเดอร์ที่ "ยกเลิก" ในเลขที่ส่งไป — ใช้เฝ้ายกเลิกถี่ ๆ ได้ เพราะได้กลับมาแค่ใบที่ยกเลิก
+ * ✅ ยิงจริงแล้ว: ส่ง 2,000 เลข → ได้ 7 ใบที่ยกเลิก (53 KB, ~0.5 วิ) · แบบไม่กรองได้ ~7 KB ต่อออเดอร์
+ * ต้องส่ง allOrder: false ตัวกรอง status ถึงจะมีผล (allOrder: true ละเว้นตัวกรองทุกอัน)
+ *
+ * @param {string[]} orderNos
+ * @returns {Promise<object[]>} rows ของออเดอร์ที่ยกเลิก
+ */
+export async function searchCancelledOrders(orderNos) {
+  const rows = [];
+  for (let i = 0; i < orderNos.length; i += MAX_SEARCH_TERMS) {
+    const chunk = orderNos.slice(i, i + MAX_SEARCH_TERMS);
+    for (let pageNo = 1; ; pageNo++) {
+      const data = await post(PATH, {
+        ...buildSearchBody(chunk, { allOrder: false }),
+        status: 'canceled',
+        desc: 1,
+        orderBy: 'orderTime',
+        pageNo,
+        pageSize: MAX_ROWS_PER_PAGE,
+      });
+      const page = data.page ?? {};
+      rows.push(...(page.rows ?? []));
+      if (pageNo >= (page.totalPage ?? 1)) break;
+    }
+  }
+  return rows;
+}
+
 export async function searchOrdersBatch(orderNos, opt = {}) {
   const rows = [];
 

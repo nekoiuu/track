@@ -97,6 +97,9 @@ model Cage {
   label          String // A, B, C… (นับใหม่ทุกวัน)
   originPickupId String? // รถคันแรกที่จดกรงนี้
   closedAt       DateTime? // กด "ปิดกรง" แล้ว — ใบถัดไปขึ้นกรงใหม่
+  /// กด "ขนหมดแล้ว" — ของในกรงขึ้นรถไปครบ · ใบในกรงนี้จดเข้ารถคันอื่นอีกไม่ได้ (กันยิงใบซ้ำผิดคัน)
+  doneAt         DateTime?
+  doneBy         String?
   createdBy      String?
   createdAt      DateTime  @default(now())
 

@@ -394,6 +394,121 @@ function statusFromBigSeller(
   return next && next !== current ? next : null;
 }
 
+// ─────────────────────────────────────────────── เฝ้าออเดอร์ยกเลิกในงานที่กำลังทำ
+
+/** เช็คยกเลิกถี่สุดเท่านี้ — ทุกเครื่องที่เปิดงานอยู่ใช้รอบเดียวกัน (ไม่ยิงซ้ำตามจำนวนเครื่อง) */
+export const CANCEL_WATCH_EVERY_MS = 30_000;
+/** BigSeller ปฏิเสธ (rate-limit / cookie / เน็ต) → พักนานขึ้น ไม่ยิงซ้ำจนพัง */
+const CANCEL_WATCH_BACKOFF_MS = 5 * 60_000;
+/** แถว SyncRun แถวเดียวใช้เป็นตัวล็อกรอบ — ไม่สร้างแถวใหม่ทุก 30 วิ (ตารางจะบวม) */
+const CANCEL_WATCH_ID = "cancel-watch";
+
+const CANCELLED_STATES = ["canceled", "cancelled", "cancel"];
+
+/** จองรอบ: ได้ = true · รอบก่อนยังไม่ครบเวลา / กำลังพักหลัง error = false */
+async function claimCancelWatch() {
+  const now = new Date();
+  const got = await db.syncRun.updateMany({
+    where: { id: CANCEL_WATCH_ID, startedAt: { lte: new Date(now.getTime() - CANCEL_WATCH_EVERY_MS + 2_000) } },
+    data: { startedAt: now, finishedAt: null },
+  });
+  if (got.count) return true;
+  // ครั้งแรก — ยังไม่มีแถว
+  return db.syncRun
+    .create({ data: { id: CANCEL_WATCH_ID, kind: CANCEL_WATCH_ID, startedAt: now } })
+    .then(() => true)
+    .catch(() => false);
+}
+
+/**
+ * หาออเดอร์ที่ยกเลิกในทุกงานที่กำลังทำ (DOING) — ยิง BigSeller แบบกรองเฉพาะ "ยกเลิก"
+ * ได้กลับมาแค่ใบที่ยกเลิก → ~1 request ต่อ 3,000 ออเดอร์ (ช่วงพีค 4–6 คัน ~3,500 ออเดอร์ = 2 request)
+ * เจอแล้วจดสถานะลงชิ้นนั้นเลย ไม่ต้องดึงสถานะทั้งใบ
+ * @returns ran = รอบนี้ยิง BigSeller จริง · found = ชิ้นที่เพิ่งรู้ว่ายกเลิก
+ */
+export async function watchDoingCancels(): Promise<{ ran: boolean; found: number; error?: string }> {
+  if (!(await canCallBigSeller())) return { ran: false, found: 0 };
+  if (!(await claimCancelWatch())) return { ran: false, found: 0 };
+
+  // ชิ้นในใบของงานที่กำลังทำ ที่ยังไม่รู้ว่ายกเลิก
+  const parcels = await db.manifestParcel.findMany({
+    where: {
+      orderNo: { not: null },
+      OR: [{ bsState: null }, { bsState: { notIn: CANCELLED_STATES } }],
+      manifest: { pickups: { some: { pickup: { status: "DOING" } } } },
+    },
+    select: { id: true, manifestId: true, orderNo: true, packageNo: true, status: true },
+  });
+  const orderNos = [...new Set(parcels.map((p) => p.orderNo!))];
+  if (!orderNos.length) {
+    await db.syncRun.update({ where: { id: CANCEL_WATCH_ID }, data: { ok: true, finishedAt: new Date(), count: 0, message: "ไม่มีออเดอร์ให้เช็ค" } });
+    return { ran: false, found: 0 };
+  }
+
+  const api = await loadApi();
+  let rows: OrderRow[];
+  try {
+    rows = (await api.searchCancelledOrders(orderNos)) as OrderRow[];
+    await recordResult(api);
+  } catch (e) {
+    const err = e as Error & { kind?: string };
+    if (err.kind) await recordResult(api, err);
+    // พัก: ดันเวลาเริ่มไปข้างหน้า → รอบถัดไปจองไม่ได้จนพ้นช่วงพัก
+    await db.syncRun.update({
+      where: { id: CANCEL_WATCH_ID },
+      data: {
+        ok: false,
+        startedAt: new Date(Date.now() + CANCEL_WATCH_BACKOFF_MS - CANCEL_WATCH_EVERY_MS),
+        finishedAt: new Date(),
+        errorKind: err.kind ?? "unknown",
+        message: err.message?.slice(0, 500),
+      },
+    });
+    return { ran: true, found: 0, error: ERROR_HINT[err.kind ?? "unknown"] ?? "เช็คยกเลิกไม่สำเร็จ" };
+  }
+
+  // จับคู่เหมือน syncManifestStatuses: เลขแพ็ก (ออเดอร์เดียวหลายกล่อง) ก่อน แล้วค่อยเลขออเดอร์
+  const byPackage = new Map(rows.filter((r) => r.packageNo).map((r) => [String(r.packageNo), r]));
+  const byOrder = new Map(rows.map((r) => [String(r.platformOrderId ?? ""), r]));
+  const hits = parcels.flatMap((p) => {
+    const r = (p.packageNo && byPackage.get(p.packageNo)) || byOrder.get(p.orderNo!);
+    return r ? [{ p, r }] : [];
+  });
+
+  if (hits.length) {
+    // ใบที่รถคันอื่นปิดงานออกไปแล้วด้วย = ยกเลิกหลังขึ้นรถ (ตามกติกาเดิมของ statusFromBigSeller)
+    const onTruck = new Set(
+      (
+        await db.pickupManifest.findMany({
+          where: { manifestId: { in: [...new Set(hits.map((h) => h.p.manifestId))] }, pickup: { status: "DONE" } },
+          select: { manifestId: true },
+        })
+      ).map((x) => x.manifestId),
+    );
+    const now = new Date();
+    await db.$transaction(
+      hits.map(({ p, r }) => {
+        const o = {
+          state: String(r.state ?? "canceled"),
+          statusText: String(r.multilingualViewStatus ?? r.viewStatus ?? ""),
+          inCancel: true,
+          returnNo: r.returnNo ? String(r.returnNo) : null,
+        };
+        const next = statusFromBigSeller(o, p.status, onTruck.has(p.manifestId));
+        return db.manifestParcel.update({
+          where: { id: p.id },
+          data: { bsState: o.state, bsStatusText: o.statusText || null, bsStatusChangedAt: now, ...(next ? { status: next } : {}) },
+        });
+      }),
+    );
+  }
+  await db.syncRun.update({
+    where: { id: CANCEL_WATCH_ID },
+    data: { ok: true, finishedAt: new Date(), count: hits.length, errorKind: null, message: `เช็ค ${orderNos.length} ออเดอร์ · เจอยกเลิกใหม่ ${hits.length} ชิ้น` },
+  });
+  return { ran: true, found: hits.length };
+}
+
 type OrderRow = {
   id?: string | number;
   platformOrderId?: string | number;

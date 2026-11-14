@@ -36,6 +36,7 @@ import { CollapseAllButton } from "@/components/fold";
 import { ParcelEditButton } from "@/components/parcel-edit";
 import { BS_ROW, countByShipping, countByStatus, searchKey, shipKey, statusKey, bsTone, takenOf } from "@/lib/shipping";
 import { FLASH_PILL, flashLabel, flashTone, isFlashParcel } from "@/lib/flash-state";
+import { BS_CANCELLED_STATES } from "@/lib/tracking";
 import { plateVT } from "@/components/pickup-cards";
 import { DoingBar, ManifestScanner, PickupDetailsForm, ReopenButton } from "@/components/pickup-live";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -64,6 +65,8 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
                 id: true,
                 label: true,
                 closedAt: true,
+                doneAt: true,
+                doneBy: true,
                 originPickupId: true,
                 shares: { where: { pickupId: { not: id } }, select: { share: true, count: true, pickup: { select: { plate: true, status: true } } } },
               },
@@ -115,6 +118,16 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
   // แท็บรายวันใน Google Sheets ที่แถวของงานนี้จะไปลง (ตามวันที่รถเข้ารับ)
   const sheetTab = dailyTabName(pickup.arrivedAt);
   const allParcels = pickup.manifests.flatMap((pm) => pm.manifest?.parcels ?? []);
+  // ออเดอร์ที่ยกเลิกในแต่ละกรง — ให้เจ้าหน้าที่หยิบออกก่อนขึ้นรถ (หน้างานเช็ค BigSeller ให้เองทุก 30 วิ)
+  const isCancelled = (p: { bsState: string | null }) => p.bsState != null && BS_CANCELLED_STATES.includes(p.bsState);
+  const cancelledByCage = new Map<string, { trackingNo: string; orderNo: string | null }[]>();
+  for (const pm of pickup.manifests) {
+    if (!pm.cageId) continue;
+    const list = cancelledByCage.get(pm.cageId) ?? [];
+    for (const p of pm.manifest?.parcels ?? []) if (isCancelled(p)) list.push({ trackingNo: p.trackingNo, orderNo: p.orderNo });
+    cancelledByCage.set(pm.cageId, list);
+  }
+  const cancelledCount = allParcels.filter(isCancelled).length;
   // น้ำหนักรวมทั้งคัน — มีเมื่อกด "ดูน้ำหนักรวม" แล้ว
   // items (JSON ~330 byte/ชิ้น) ใช้แค่คิดน้ำหนัก → ไม่ดึงตอนกำลังสแกน (หน้าโหลดใหม่ทุกใบที่สแกน ทั้งคันหลายพันชิ้น = egress ก้อนใหญ่สุด)
   const itemsById = new Map<string, unknown>(
@@ -244,7 +257,10 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
                 share: c.share,
                 count: c.count,
                 others: c.cage.shares.map((o) => ({ plate: o.pickup.plate, share: o.share, count: o.count, doing: o.pickup.status === "DOING" })),
+                cancelled: cancelledByCage.get(c.cage.id) ?? [],
+                done: c.cage.doneAt ? { by: c.cage.doneBy, at: fmtTime(c.cage.doneAt) } : null,
               }))}
+              cancelledCount={cancelledCount}
             />
           </Section>
 
