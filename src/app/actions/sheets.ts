@@ -45,7 +45,7 @@ const day = (d: Date | null | undefined) => (d ? dayFmt.format(d) : "");
 
 // ─────────────────────────────────────────────── สีตามสถานะ
 
-type Tone = "done" | "move" | "back" | "issue" | "cancel" | "none";
+type Tone = "done" | "move" | "back" | "issue" | "cancel" | "settled" | "none";
 const rgb = (hex: string): Rgb => ({ red: parseInt(hex.slice(1, 3), 16) / 255, green: parseInt(hex.slice(3, 5), 16) / 255, blue: parseInt(hex.slice(5, 7), 16) / 255 });
 /** tint = พื้นทั้งแถว (อ่อน) · strong = ช่องสถานะ (เข้มกว่า) */
 const TONE: Record<Exclude<Tone, "none">, { tint: Rgb; strong: Rgb }> = {
@@ -54,10 +54,20 @@ const TONE: Record<Exclude<Tone, "none">, { tint: Rgb; strong: Rgb }> = {
   back: { tint: rgb("#fef7e0"), strong: rgb("#fde293") }, //   เหลือง — ตีกลับ
   issue: { tint: rgb("#feefe3"), strong: rgb("#fcc28c") }, //  ส้ม — ตกค้าง/มีปัญหา/ส่งไม่สำเร็จ
   cancel: { tint: rgb("#fce8e6"), strong: rgb("#f4a7a0") }, // แดง — ยกเลิก
+  settled: { tint: rgb("#d9ead3"), strong: rgb("#93c47d") }, // เขียวเข้มกว่า "เซ็นรับแล้ว" — ยกเลิก · ไม่ได้ไปกับรถ · ได้ของคืนแล้ว (จบแล้ว ไม่ต้องตาม)
 };
 
 /** กลุ่มสีของแถว — สถานะร้าน (คนตั้ง) มาก่อน แล้วค่อยดู Flash / BigSeller */
-function toneOf(p: { status: ParcelStatus; flashState: number | null; bsStatusText?: string | null }): Tone {
+function toneOf(p: {
+  status: ParcelStatus;
+  flashState: number | null;
+  flashNotFound: boolean;
+  bsState: string | null;
+  shippingMethod: string | null;
+  bsStatusText?: string | null;
+}): Tone {
+  // ยกเลิก · ไม่ได้ไปกับรถ · ได้ของคืนแล้ว → เขียว แยกจากยกเลิกที่ยังต้องตาม
+  if (p.status === "RETURNED" && returnKind(p) === "stayed") return "settled";
   if (p.status === "CANCELLED_AFTER" || p.flashState === 9 || /ยกเลิก|cancel/i.test(p.bsStatusText ?? "")) return "cancel";
   if (p.status === "RETURNING" || p.status === "RETURNED") return "back";
   if (p.status === "PROBLEM") return "issue";
@@ -402,6 +412,9 @@ export async function exportTrackingCase(tab: TrackTab, rangeDays: number, stale
       flashLastRoute: true,
       flashRoutedAt: true,
       bsStatusText: true,
+      // ใช้แยกสี "ยกเลิก · ไม่ได้ไปกับรถ · ได้ของคืนแล้ว" (toneOf → returnKind)
+      bsState: true,
+      shippingMethod: true,
       items: true,
       scannedBy: true,
       scannedAt: true,
