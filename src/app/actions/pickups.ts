@@ -614,3 +614,57 @@ export async function pollPickupCancels(pickupId: string): Promise<{ cancelled: 
   });
   return { cancelled, ...(res?.error ? { error: res.error } : {}) };
 }
+
+// ─────────────────────────────────────────────── ยิงกล่องเช็คว่าเอาใบถูกมา
+
+
+/**
+ * ยิงบาร์โค้ดกล่องในช่องเดียวกับจด manifest → เช็คว่ากล่องอยู่ในใบที่เพิ่งยิงไหม (จับเอาใบผิดมา / วางของผิดกรง)
+ * ค้นใน DB อย่างเดียว (index ที่ trackingNo) ไม่ยิง BigSeller · ไม่จดอะไรเพิ่ม
+ */
+export async function checkBoxInPickup(pickupId: string, raw: string): Promise<{ ok?: string; warn?: string; error?: string }> {
+  await requirePickupAccess(pickupId);
+  const trackingNo = normalizeCode(raw);
+  if (!trackingNo) return { error: "ยิงบาร์โค้ดกล่อง" };
+
+  const [parcels, last] = await Promise.all([
+    db.manifestParcel.findMany({
+      where: { trackingNo },
+      select: {
+        bsState: true,
+        manifest: {
+          select: {
+            id: true,
+            manifestNo: true,
+            pickups: { select: { pickupId: true, pickup: { select: { plate: true } }, cage: { select: { id: true, label: true } } } },
+          },
+        },
+      },
+    }),
+    // ใบล่าสุดที่ยิงเข้างานนี้ = ใบที่น่าจะกำลังเช็คอยู่
+    db.pickupManifest.findFirst({
+      where: { pickupId, manifestId: { not: null } },
+      orderBy: { createdAt: "desc" },
+      select: { manifestId: true, manifest: { select: { manifestNo: true } }, cage: { select: { id: true, label: true } } },
+    }),
+  ]);
+
+  const mine = parcels.flatMap((p) => p.manifest.pickups.filter((x) => x.pickupId === pickupId).map((x) => ({ p, link: x })));
+  if (!mine.length) {
+    const other = parcels.flatMap((p) => p.manifest.pickups.map((x) => ({ no: p.manifest.manifestNo, plate: x.pickup.plate })))[0];
+    return {
+      error: other
+        ? `กล่อง ${trackingNo} อยู่ใบ ${other.no} ของรถ ${other.plate} — ไม่ใช่ของรถคันนี้`
+        : `ไม่พบกล่อง ${trackingNo} ในใบที่จดไว้ — เอาใบผิดมา หรือยังไม่ได้จดใบของกล่องนี้`,
+    };
+  }
+
+  const { p, link } = mine.find((x) => x.p.manifest.id === last?.manifestId) ?? mine[0];
+  const cageText = link.cage ? ` · กรง ${link.cage.label}` : "";
+  if (p.bsState && BS_CANCELLED_STATES.includes(p.bsState)) return { error: `กล่อง ${trackingNo} ออเดอร์ยกเลิก — หยิบออก (ใบ ${p.manifest.manifestNo}${cageText})` };
+  if (!last || p.manifest.id === last.manifestId) return { ok: `✓ กล่องอยู่ในใบ ${p.manifest.manifestNo}${cageText} — ใบถูกต้อง` };
+  if (link.cage && link.cage.id === last.cage?.id) return { ok: `✓ กล่องอยู่ใบ ${p.manifest.manifestNo} กรงเดียวกัน (${link.cage.label})` };
+  return {
+    warn: `กล่องนี้อยู่ใบ ${p.manifest.manifestNo}${cageText} — ไม่ใช่ใบที่เพิ่งยิง (${last.manifest?.manifestNo ?? "—"}${last.cage ? ` · กรง ${last.cage.label}` : ""}) เช็คว่าเอาใบถูกมาไหม`,
+  };
+}

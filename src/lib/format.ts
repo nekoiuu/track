@@ -73,3 +73,8 @@ export function fmtWeight(grams: number | null | undefined) {
   if (grams < 1000) return `${Math.round(grams).toLocaleString("th-TH")} ก.`;
   return `${(grams / 1000).toLocaleString("th-TH", { maximumFractionDigits: 2 })} กก.`;
 }
+/**
+ * ช่องจด manifest รับได้ 2 แบบ: เลขใบนำจ่าย (MFG… หรือ 4 หลักท้าย) → จดใบ · นอกนั้น = เลขแทร็คบนกล่อง → เช็คว่าอยู่ใบไหน
+ * ใบนำจ่ายใน DB เป็น MFG + 12 ตัวทั้งหมด · เลขแทร็คขึ้นต้น TH… หรือเลขยาว 19 หลัก — ไม่ชนกัน
+ */
+export const isManifestInput = (code: string) => /^MFG/i.test(code) || /^\d{4}$/.test(code);

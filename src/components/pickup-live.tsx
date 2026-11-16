@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { cn } from "cn";
 import {
   addPickupManifest,
+  checkBoxInPickup,
   closeCage,
   closePickup,
   movePickupManifestCage,
@@ -40,6 +41,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { isManifestInput } from "@/lib/format";
 import { Field } from "./kit";
 import { LiveTimer, useActionToast } from "./motion";
 
@@ -167,6 +169,17 @@ export function ManifestScanner({
     setDraft("");
     inputRef.current?.focus();
     for (const code of codes) {
+      // ยิงบาร์โค้ดกล่อง (ไม่ใช่ MFG… / 4 หลัก) → เช็คว่าอยู่ใบที่เพิ่งยิงไหม · ไม่จดอะไร ไม่มีชิปโผล่
+      if (!isManifestInput(code)) {
+        startTransition(async () => {
+          const res = await checkBoxInPickup(pickupId, code);
+          if (res.error || res.warn) navigator.vibrate?.(300);
+          if (res.error) toast.error(res.error, { duration: 10_000 });
+          else if (res.warn) toast.warning(res.warn, { duration: 10_000 });
+          else toast.success(res.ok);
+        });
+        continue;
+      }
       startTransition(async () => {
         apply({ type: "add", chip: { id: `tmp-${code}`, code, manifestId: null, manifestNo: null, parcels: 0, pending: true } });
         const res = await addPickupManifest(pickupId, code);
@@ -221,8 +234,8 @@ export function ManifestScanner({
               autoFocus
               autoComplete="off"
               inputMode={prefix ? "numeric" : "text"}
-              aria-label="เลข manifest 4 หลักท้าย"
-              placeholder={prefix ? "____" : "เลข manifest 4 หลักท้าย แล้ว Enter"}
+              aria-label="เลข manifest 4 หลักท้าย หรือยิงบาร์โค้ดกล่องเพื่อเช็คใบ"
+              placeholder={prefix ? "____" : "เลข manifest 4 หลักท้าย · ยิงกล่องเพื่อเช็คใบ"}
               style={prefix ? { paddingLeft: `calc(1rem + ${prefix.length + 0.6}ch)` } : undefined}
               className={cn(
                 "h-12 rounded-xl border-[1.5px] border-brand/50 bg-card font-mono focus-visible:border-brand",
