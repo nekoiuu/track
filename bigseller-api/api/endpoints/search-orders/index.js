@@ -86,12 +86,18 @@ export async function searchCancelledOrders(orderNos) {
   return rows;
 }
 
+/**
+ * @param {string[]} orderNos
+ * @param {object} [opt] เหมือน searchOrders + chunkSize (เลขต่อ request · ค่าเริ่มต้น CHUNK_SIZE)
+ *   ยิงจริงแล้ว: chunkSize/pageSize 300 ได้ครบในหน้าเดียว (~2 MB) — ลดจำนวน request ได้ 6 เท่าจาก 50
+ */
 export async function searchOrdersBatch(orderNos, opt = {}) {
   const rows = [];
+  const size = Math.min(opt.chunkSize ?? CHUNK_SIZE, MAX_SEARCH_TERMS);
 
-  for (let i = 0; i < orderNos.length; i += CHUNK_SIZE) {
-    const chunk = orderNos.slice(i, i + CHUNK_SIZE);
-    const n = Math.floor(i / CHUNK_SIZE) + 1;
+  for (let i = 0; i < orderNos.length; i += size) {
+    const chunk = orderNos.slice(i, i + size);
+    const n = Math.floor(i / size) + 1;
 
     let page = await searchOrders(chunk, opt);
     rows.push(...page.rows);

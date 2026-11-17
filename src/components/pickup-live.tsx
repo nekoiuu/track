@@ -68,6 +68,8 @@ export type ManifestChip = {
   pending?: boolean;
   /** อยู่ในกรงไหน (null = ใบเก่าที่แบ่งรายใบ) */
   cageId?: string | null;
+  /** ใบนี้เป็นของอะไร เช่น "ถุงเท้าสีดำล้วน 12 · สองธง 5 · +3 อย่าง" (ตัวเลข = กล่อง) — ยังไม่มีข้อมูล = ไม่โชว์ */
+  goods?: string | null;
 };
 
 /** กรงที่รถคันนี้อยู่ด้วย — share/count ของคันนี้ (ไม่ใส่ทั้งคู่ = ที่เหลือ / ทั้งกรงถ้าอยู่คันเดียว) */
@@ -94,13 +96,15 @@ const CANCEL_POLL_MS = 30_000;
  * งานที่กำลังทำ: เช็คออเดอร์ยกเลิกเงียบ ๆ ทุก 30 วิ ตอนหน้านี้เปิดอยู่บนจอ
  * ไม่มี spinner ไม่มี toast ตอนปกติ · โหลดหน้าใหม่เฉพาะตอนจำนวนยกเลิกเปลี่ยน
  */
-function useCancelWatch(pickupId: string, enabled: boolean, count: number) {
+function useCancelWatch(pickupId: string, enabled: boolean, count: number, goods: number) {
   const router = useRouter();
   const known = useRef(count);
+  const knownGoods = useRef(goods);
   // หน้าโหลดใหม่แล้ว (นับจาก server) → ใช้ค่านั้นเป็นฐาน
   useEffect(() => {
     known.current = count;
-  }, [count]);
+    knownGoods.current = goods;
+  }, [count, goods]);
   useEffect(() => {
     if (!enabled) return;
     let busy = false;
@@ -112,6 +116,10 @@ function useCancelWatch(pickupId: string, enabled: boolean, count: number) {
         if (res.cancelled !== known.current) {
           if (res.cancelled > known.current) toast.warning(`มีออเดอร์ยกเลิกเพิ่ม ${res.cancelled - known.current} ชิ้น — ดูที่กรง แล้วหยิบออก`, { duration: 15_000 });
           known.current = res.cancelled;
+          router.refresh();
+        } else if (res.goods !== knownGoods.current) {
+          // รายการสินค้าที่ดึงเบื้องหลังมาถึงแล้ว → โหลดใหม่เงียบ ๆ ให้ชื่อสินค้าโผล่บนการ์ดใบ
+          knownGoods.current = res.goods;
           router.refresh();
         }
       } catch {
@@ -141,6 +149,7 @@ export function ManifestScanner({
   prefix,
   cages = [],
   cancelledCount = 0,
+  goodsCount = 0,
 }: {
   pickupId: string;
   items: ManifestChip[];
@@ -149,8 +158,10 @@ export function ManifestScanner({
   cages?: CageInfo[];
   /** ชิ้นที่ยกเลิกทั้งงานตอนโหลดหน้า — ใช้เทียบว่ามียกเลิกใหม่ไหม */
   cancelledCount?: number;
+  /** ชิ้นที่ได้รายการสินค้าแล้วตอนโหลดหน้า — ใช้รู้ว่าสินค้าที่ดึงเบื้องหลังมาถึงแล้ว */
+  goodsCount?: number;
 }) {
-  useCancelWatch(pickupId, editable, cancelledCount);
+  useCancelWatch(pickupId, editable, cancelledCount, goodsCount);
   const [draft, setDraft] = useState("");
   const [, startTransition] = useTransition();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -731,6 +742,8 @@ function ManifestChipItem({
           ) : (
             <span className="block truncate font-mono text-lg font-semibold tracking-tight">{c.code}</span>
           )}
+          {/* ของในใบ — เทียบกับของในกรงได้ทันทีว่าเอาใบถูกมาไหม */}
+          {c.goods && <span className="block truncate text-[13px] text-body">{c.goods}</span>}
           <span className="block truncate text-xs text-mute">
             {c.pending ? (
               <span className="inline-flex items-center gap-1">

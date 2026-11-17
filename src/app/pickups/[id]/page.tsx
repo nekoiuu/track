@@ -37,6 +37,7 @@ import { ParcelEditButton } from "@/components/parcel-edit";
 import { BS_ROW, countByShipping, countByStatus, searchKey, shipKey, statusKey, bsTone, takenOf } from "@/lib/shipping";
 import { FLASH_PILL, flashLabel, flashTone, isFlashParcel } from "@/lib/flash-state";
 import { BS_CANCELLED_STATES } from "@/lib/tracking";
+import { goodsSummaryByManifest } from "@/lib/goods";
 import { plateVT } from "@/components/pickup-cards";
 import { DoingBar, ManifestScanner, PickupDetailsForm, ReopenButton } from "@/components/pickup-live";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -95,6 +96,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
                     flashLastRoute: true,
                     flashNotFound: true,
                     flashFetchedAt: true,
+                    itemsSyncedAt: true,
                   },
                 },
                 // ใบเดียวกันขึ้นรถคันอื่นด้วย (แบ่งคัน) — โชว์ว่าคันอื่นรับไปเท่าไหร่
@@ -128,6 +130,9 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
     cancelledByCage.set(pm.cageId, list);
   }
   const cancelledCount = allParcels.filter(isCancelled).length;
+  // ใบนี้เป็นของอะไร (สรุปใน DB ส่งกลับแค่ยอดต่อสินค้า) · ชิ้นที่ได้รายการสินค้าแล้ว = ฐานให้หน้าเว็บรู้ว่าสินค้ามาถึงแล้ว
+  const goods = await goodsSummaryByManifest(pickup.manifests.flatMap((pm) => (pm.manifestId ? [pm.manifestId] : [])));
+  const goodsCount = allParcels.filter((p) => p.itemsSyncedAt).length;
   // น้ำหนักรวมทั้งคัน — มีเมื่อกด "ดูน้ำหนักรวม" แล้ว
   // items (JSON ~330 byte/ชิ้น) ใช้แค่คิดน้ำหนัก → ไม่ดึงตอนกำลังสแกน (หน้าโหลดใหม่ทุกใบที่สแกน ทั้งคันหลายพันชิ้น = egress ก้อนใหญ่สุด)
   const itemsById = new Map<string, unknown>(
@@ -248,6 +253,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
                 addedBy: pm.addedBy,
                 note: pm.note,
                 cageId: pm.cageId,
+                goods: pm.manifestId ? goods.get(pm.manifestId) : null,
               }))}
               cages={pickup.cages.map((c) => ({
                 id: c.cage.id,
@@ -261,6 +267,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
                 done: c.cage.doneAt ? { by: c.cage.doneBy, at: fmtTime(c.cage.doneAt) } : null,
               }))}
               cancelledCount={cancelledCount}
+              goodsCount={goodsCount}
             />
           </Section>
 

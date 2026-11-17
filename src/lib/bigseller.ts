@@ -523,7 +523,7 @@ type OrderRow = {
 };
 
 /**
- * ดึงสถานะทุกชิ้นในใบนำจ่ายจาก BigSeller พร้อมกัน — ค้นทีละ 50 ออเดอร์ต่อ request (288 ชิ้น ≈ 6 request)
+ * ดึงสถานะทุกชิ้นในใบนำจ่ายจาก BigSeller พร้อมกัน — ค้นทีละ 300 ออเดอร์ต่อ request (288 ชิ้น ≈ 1 request)
  * จับคู่ด้วยเลขแพ็ก (BSG…) ก่อน เพราะออเดอร์เดียวแยกหลายกล่องได้ · ไม่เจอค่อยใช้เลขออเดอร์
  * เขียน DB แบบรวมกลุ่ม (updateMany ตามสถานะ) ไม่ใช่ทีละแถว — DB อยู่ไกล ทีละแถวจะช้ามาก
  * เก็บรายการสินค้าในกล่องไปด้วย (มาใน request เดียวกัน) — ใช้คิดน้ำหนักรวมของใบ
@@ -555,7 +555,7 @@ export async function syncManifestStatuses(
 
   return track("statuses", async (api) => {
     const orderNos = [...new Set(parcels.map((p) => p.orderNo!))];
-    const { rows } = (await api.searchOrdersBatch(orderNos, { pageSize: 100 })) as { rows: OrderRow[] };
+    const { rows } = (await api.searchOrdersBatch(orderNos, { pageSize: 300, chunkSize: 300 })) as { rows: OrderRow[] };
     const byPackage = new Map(rows.filter((r) => r.packageNo).map((r) => [String(r.packageNo), r]));
     const byOrder = new Map(rows.map((r) => [String(r.platformOrderId ?? ""), r]));
 

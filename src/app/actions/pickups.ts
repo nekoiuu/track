@@ -7,7 +7,7 @@ import { after } from "next/server";
 import { db } from "@/lib/db";
 import { fmtDateTime, fromLocalInput, normalizeCode } from "@/lib/format";
 import { createManualManifest, deleteManifestsWithoutPickup, findManifestByGuesses, isFullManifestNo, manifestPrefixCandidates } from "@/lib/manifests";
-import { fetchManifestTrackings, refreshManifestsIfStale, watchDoingCancels } from "@/lib/bigseller";
+import { fetchManifestTrackings, refreshManifestsIfStale, syncManifestStatuses, watchDoingCancels } from "@/lib/bigseller";
 import { BS_CANCELLED_STATES } from "@/lib/tracking";
 import { notifyPickupClosed } from "@/lib/line-messages";
 import { refreshPickupStatuses } from "@/lib/status-report";
@@ -248,6 +248,12 @@ export async function addPickupManifest(pickupId: string, raw: string) {
 
   // เลขแทร็คกิ้งทั้งใบ: เคยดึงแล้วใช้ของเดิม ไม่เคยก็ยิง 1 request
   const t = await fetchManifestTrackings(m.id);
+  // สินค้าในใบ (โชว์ว่าใบนี้เป็นของอะไร ให้เทียบกับของในกรง) — ดึงหลังตอบหน้าเว็บ คนจดไม่ต้องรอ
+  // ได้สถานะ BigSeller ล่าสุดมาด้วยใน request เดียวกัน · ใบที่เคยดึงสินค้าครบแล้วไม่ยิงซ้ำ
+  if (t.ok && (await db.manifestParcel.count({ where: { manifestId: m.id, itemsSyncedAt: null } }))) {
+    const manifestId = m.id;
+    after(() => syncManifestStatuses([manifestId]).catch((e) => console.warn("[goods] ดึงสินค้าไม่สำเร็จ:", e)));
+  }
   // ลงกรง: ใบนี้อยู่ในกรงของรถคันอื่น → เข้ากรงนั้น (คันนี้ได้ "ที่เหลือ") · ไม่งั้นกรงที่เปิดอยู่ของคันนี้
   // ใบเก่าที่แบ่งแบบรายใบ (ไม่มีกรง) → แบ่งแบบเดิม คันนี้ได้ "ที่เหลือ"
   const legacy = await db.pickupManifest.count({ where: { manifestId: m.id, id: { not: pm.id }, cageId: null } });
@@ -603,16 +609,19 @@ export async function refetchRecentManifests(days: number): Promise<{ ok: boolea
 /**
  * หน้างานที่กำลังทำเรียกเงียบ ๆ เป็นระยะ — ไม่มี toast ไม่ revalidate
  * ยิง BigSeller จริงไม่เกินทุก 30 วิ รวมทุกเครื่องทุกงาน (watchDoingCancels ล็อกรอบไว้)
- * @returns cancelled = ชิ้นที่ยกเลิกในงานนี้ตอนนี้ → หน้าเว็บโหลดใหม่เฉพาะตอนตัวเลขเปลี่ยน
+ * @returns cancelled = ชิ้นที่ยกเลิกในงานนี้ · goods = ชิ้นที่ได้รายการสินค้าแล้ว (ดึงเบื้องหลังตอนจดใบ)
+ *   → หน้าเว็บโหลดใหม่เฉพาะตอนตัวเลขใดตัวหนึ่งเปลี่ยน
  */
-export async function pollPickupCancels(pickupId: string): Promise<{ cancelled: number; error?: string }> {
+export async function pollPickupCancels(pickupId: string): Promise<{ cancelled: number; goods: number; error?: string }> {
   await requirePickupAccess(pickupId);
   const pickup = await db.pickup.findUnique({ where: { id: pickupId }, select: { status: true } });
   const res = pickup?.status === "DOING" ? await watchDoingCancels().catch((e) => ({ ran: false, found: 0, error: String(e?.message ?? e) })) : null;
-  const cancelled = await db.manifestParcel.count({
-    where: { bsState: { in: BS_CANCELLED_STATES }, manifest: { pickups: { some: { pickupId } } } },
-  });
-  return { cancelled, ...(res?.error ? { error: res.error } : {}) };
+  const inPickup = { manifest: { pickups: { some: { pickupId } } } };
+  const [cancelled, goods] = await Promise.all([
+    db.manifestParcel.count({ where: { bsState: { in: BS_CANCELLED_STATES }, ...inPickup } }),
+    db.manifestParcel.count({ where: { itemsSyncedAt: { not: null }, ...inPickup } }),
+  ]);
+  return { cancelled, goods, ...(res?.error ? { error: res.error } : {}) };
 }
 
 // ─────────────────────────────────────────────── ยิงกล่องเช็คว่าเอาใบถูกมา
