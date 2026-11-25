@@ -129,17 +129,22 @@ const str = (v: unknown) => {
   return s && s !== "--" ? s : null;
 };
 
-function toRecord(r: Row, day: string) {
+/** "YYYY-MM-DD" ตามเวลาไทยของ Date */
+const bkkDay = (d: Date) => new Date(d.getTime() + 7 * 3_600_000).toISOString().slice(0, 10);
+
+/** @param fallbackDay ใช้เมื่ออ่านเวลายกเลิกไม่ได้ — ปกติ day = วันที่ยกเลิก (เวลาไทย) */
+function toRecord(r: Row, fallbackDay: string) {
+  const cancelledAt = parseBsTime(r.cancelTimeStr);
   return {
     bsOrderId: String(r.id),
-    day,
+    day: cancelledAt ? bkkDay(cancelledAt) : fallbackDay,
     packageNo: str(r.packageNo),
     orderNo: str(r.platformOrderId),
     platform: str(r.platform),
     shopName: str(r.shopName),
     trackingNo: str(r.trackingNo)?.toUpperCase() ?? null,
     carrier: str(r.shippingCarrierName),
-    cancelledAt: parseBsTime(r.cancelTimeStr)?.toISOString() ?? null,
+    cancelledAt: cancelledAt?.toISOString() ?? null,
     cancelReason: str(r.cancelReason ?? r.buyerCancelReason),
     cancelBy: str(r.cancelByDisplay),
     beforeStatus: str(r.multilingualCancelBeforeStatus ?? r.inCancelBeforeStatus),
@@ -153,23 +158,78 @@ function toRecord(r: Row, day: string) {
 }
 
 /** จองรอบ — ได้ = true · รอบก่อนยังไม่ครบเวลา / กำลังพักหลัง error = false */
-async function claim(minMs: number) {
+async function claim(minMs: number, id = LOCK_ID) {
   const now = new Date();
   const got = await db.syncRun.updateMany({
-    where: { id: LOCK_ID, startedAt: { lte: new Date(now.getTime() - minMs + 2_000) } },
+    where: { id, startedAt: { lte: new Date(now.getTime() - minMs + 2_000) } },
     data: { startedAt: now, finishedAt: null },
   });
   if (got.count) return true;
   return db.syncRun
-    .create({ data: { id: LOCK_ID, kind: LOCK_ID, startedAt: now } })
+    .create({ data: { id, kind: id, startedAt: now } })
     .then(() => true)
     .catch(() => false);
 }
 
+/**
+ * ย้อนหลัง: ของที่ยกเลิกตอน "กำลังดำเนินการ" / "รอรับสินค้า" (แพ็ก/พิมพ์ใบแล้ว) ในกี่วันล่าสุด
+ * ของพวกนี้มักค้างในร้าน — ไม่ได้สแกนลงใบนำจ่าย BigSeller ไม่ขยับ แต่เจ้าหน้าที่แพ็กไปแล้ว
+ * กรองที่ BigSeller เลย (inCancelBeforeStatus) — 7 วัน ~500 ใบ ≈ 2–3 request · ทำทุก CANCEL_HUNT_BACK_MINUTES นาที
+ */
+const BACK_LOCK_ID = "cancel-hunt-back";
+const BACK_STATUSES = ["processing", "pickup"] as const;
+export const backDays = () => (Number(process.env.CANCEL_HUNT_BACK_DAYS) > 0 ? Number(process.env.CANCEL_HUNT_BACK_DAYS) : 7);
+const backMinutes = () => (Number(process.env.CANCEL_HUNT_BACK_MINUTES) > 0 ? Number(process.env.CANCEL_HUNT_BACK_MINUTES) : 30);
+
 export type HuntSync = { ran: boolean; ok: boolean; message: string; total?: number; newFind?: number };
 
+/** บันทึกแถวจาก BigSeller ลง CancelHunt (1 query) + จับคู่ใบนำจ่าย → { ใหม่ที่ต้องหา, วันที่แตะ } */
+async function storeRecords(records: ReturnType<typeof toRecord>[]) {
+  if (!records.length) return { newFind: 0, days: [] as string[] };
+  // ใหม่ = เพิ่ม · มีแล้ว = อัปเดตเฉพาะข้อมูลจาก BigSeller (ไม่แตะ status / คนหา / หมายเหตุ)
+  // needsFind ขึ้นจาก false → true ได้ (เพิ่งรู้ว่าพิมพ์ใบแล้ว) แต่ไม่ลงกลับ — คนกำลังหาอยู่จะได้ไม่หายจากรายการ
+  const inserted = await db.$queryRaw<{ needsFind: boolean; inserted: boolean }[]>`
+    INSERT INTO "CancelHunt" (
+      id, "bsOrderId", day, "packageNo", "orderNo", platform, "shopName", "trackingNo", carrier,
+      "cancelledAt", "cancelReason", "cancelBy", "beforeStatus", "labelPrintedAt", "pickPrintedAt", "packedAt",
+      items, "needsFind", "firstSeenAt", "updatedAt"
+    )
+    SELECT
+      'ch' || md5(random()::text || x."bsOrderId"), x."bsOrderId", x.day, x."packageNo", x."orderNo", x.platform, x."shopName", x."trackingNo", x.carrier,
+      x."cancelledAt", x."cancelReason", x."cancelBy", x."beforeStatus", x."labelPrintedAt", x."pickPrintedAt", x."packedAt",
+      x.items, x."needsFind", now(), now()
+    FROM jsonb_to_recordset(${JSON.stringify(records)}::jsonb) AS x(
+      "bsOrderId" text, day text, "packageNo" text, "orderNo" text, platform text, "shopName" text, "trackingNo" text, carrier text,
+      "cancelledAt" timestamptz, "cancelReason" text, "cancelBy" text, "beforeStatus" text,
+      "labelPrintedAt" timestamptz, "pickPrintedAt" timestamptz, "packedAt" timestamptz, items jsonb, "needsFind" boolean
+    )
+    ON CONFLICT ("bsOrderId") DO UPDATE SET
+      day = EXCLUDED.day,
+      "packageNo" = EXCLUDED."packageNo", "trackingNo" = EXCLUDED."trackingNo", carrier = EXCLUDED.carrier,
+      "cancelledAt" = EXCLUDED."cancelledAt", "cancelReason" = EXCLUDED."cancelReason", "cancelBy" = EXCLUDED."cancelBy",
+      "beforeStatus" = EXCLUDED."beforeStatus", "labelPrintedAt" = EXCLUDED."labelPrintedAt",
+      "pickPrintedAt" = EXCLUDED."pickPrintedAt", "packedAt" = EXCLUDED."packedAt", items = EXCLUDED.items,
+      "needsFind" = "CancelHunt"."needsFind" OR EXCLUDED."needsFind", "updatedAt" = now()
+    RETURNING "needsFind", (xmax = 0) AS inserted`;
+  const days = [...new Set(records.map((r) => r.day))];
+
+  // จับคู่กับพัสดุในใบนำจ่ายของเรา — บอกได้ว่าอยู่ใบไหน กรงไหน ขึ้นรถคันไหน (เลขแทร็คก่อน · ไม่มีค่อยใช้เลขออเดอร์)
+  // ทุกรอบ (ไม่ใช่แค่ตอนเพิ่มใหม่) — ของที่เพิ่งสแกนลงใบทีหลังจะได้ขึ้นว่าอยู่ใบไหน
+  await db.$executeRaw`
+    UPDATE "CancelHunt" c SET "parcelId" = p.id
+    FROM "ManifestParcel" p
+    WHERE c.day = ANY(${days}::text[]) AND c."parcelId" IS NULL AND c."trackingNo" IS NOT NULL AND p."trackingNo" = c."trackingNo"`;
+  await db.$executeRaw`
+    UPDATE "CancelHunt" c SET "parcelId" = p.id
+    FROM "ManifestParcel" p
+    WHERE c.day = ANY(${days}::text[]) AND c."parcelId" IS NULL AND c."orderNo" IS NOT NULL AND p."orderNo" = c."orderNo"`;
+  return { newFind: inserted.filter((r) => r.inserted && r.needsFind).length, days };
+}
+
 /**
- * ดึงออเดอร์ยกเลิกวันนี้ 1 รอบ
+ * ดึงออเดอร์ยกเลิก 1 รอบ
+ * - วันนี้: ทุกใบที่ยกเลิก (ทุก CANCEL_HUNT_MINUTES นาที)
+ * - ย้อนหลัง CANCEL_HUNT_BACK_DAYS วัน: เฉพาะที่ยกเลิกตอนกำลังดำเนินการ / รอรับสินค้า (ทุก CANCEL_HUNT_BACK_MINUTES นาที)
  * @param manual กดจากหน้าเว็บ — เว้นระยะแค่ 30 วิ (รอบอัตโนมัติเว้นตาม CANCEL_HUNT_MINUTES)
  */
 export async function syncTodayCancels({ manual = false } = {}): Promise<HuntSync> {
@@ -177,11 +237,19 @@ export async function syncTodayCancels({ manual = false } = {}): Promise<HuntSyn
   const every = manual ? MANUAL_MIN_MS : Math.max(1, huntMinutes()) * 60_000;
   if (!(await claim(every))) return { ran: false, ok: true, message: "เพิ่งดึงไปเมื่อกี้" };
 
-  const day = todayKey();
+  const today = todayKey();
   const api = await loadApi();
   let rows: Row[];
+  const backRows: Row[] = [];
+  let backRan = false;
   try {
     rows = ((await api.listCancelledByDay({ days: 0 })) as { rows: Row[] }).rows;
+    // ย้อนหลังห่างกว่า — ไม่ต้องดึงทุก 5 นาที (ของเก่าไม่ค่อยเพิ่ม)
+    if (await claim(backMinutes() * 60_000, BACK_LOCK_ID)) {
+      backRan = true;
+      for (const s of BACK_STATUSES) backRows.push(...((await api.listCancelledByDay({ days: backDays(), beforeStatus: s })) as { rows: Row[] }).rows);
+      await db.syncRun.update({ where: { id: BACK_LOCK_ID }, data: { ok: true, finishedAt: new Date(), count: backRows.length } });
+    }
     await recordResult(api);
   } catch (e) {
     const err = e as Error & { kind?: string };
@@ -196,59 +264,31 @@ export async function syncTodayCancels({ manual = false } = {}): Promise<HuntSyn
         message: err.message?.slice(0, 500),
       },
     });
+    // รอบย้อนหลังพังกลางทาง → ให้ลองใหม่รอบหน้า
+    if (backRan) await db.syncRun.update({ where: { id: BACK_LOCK_ID }, data: { startedAt: new Date(0) } }).catch(() => null);
     return { ran: true, ok: false, message: ERROR_HINT[err.kind ?? "unknown"] ?? `ดึงจาก BigSeller ไม่สำเร็จ: ${err.message}` };
   }
 
-  const records = rows.filter((r) => r.id != null).map((r) => toRecord(r, day));
-  let newFind = 0;
-  if (records.length) {
-    // ใหม่ = เพิ่ม · มีแล้ว = อัปเดตเฉพาะข้อมูลจาก BigSeller (ไม่แตะ status / คนหา / หมายเหตุ)
-    // needsFind ขึ้นจาก false → true ได้ (เพิ่งรู้ว่าพิมพ์ใบแล้ว) แต่ไม่ลงกลับ — คนกำลังหาอยู่จะได้ไม่หายจากรายการ
-    const inserted = await db.$queryRaw<{ needsFind: boolean }[]>`
-      INSERT INTO "CancelHunt" (
-        id, "bsOrderId", day, "packageNo", "orderNo", platform, "shopName", "trackingNo", carrier,
-        "cancelledAt", "cancelReason", "cancelBy", "beforeStatus", "labelPrintedAt", "pickPrintedAt", "packedAt",
-        items, "needsFind", "firstSeenAt", "updatedAt"
-      )
-      SELECT
-        'ch' || md5(random()::text || x."bsOrderId"), x."bsOrderId", x.day, x."packageNo", x."orderNo", x.platform, x."shopName", x."trackingNo", x.carrier,
-        x."cancelledAt", x."cancelReason", x."cancelBy", x."beforeStatus", x."labelPrintedAt", x."pickPrintedAt", x."packedAt",
-        x.items, x."needsFind", now(), now()
-      FROM jsonb_to_recordset(${JSON.stringify(records)}::jsonb) AS x(
-        "bsOrderId" text, day text, "packageNo" text, "orderNo" text, platform text, "shopName" text, "trackingNo" text, carrier text,
-        "cancelledAt" timestamptz, "cancelReason" text, "cancelBy" text, "beforeStatus" text,
-        "labelPrintedAt" timestamptz, "pickPrintedAt" timestamptz, "packedAt" timestamptz, items jsonb, "needsFind" boolean
-      )
-      ON CONFLICT ("bsOrderId") DO UPDATE SET
-        "packageNo" = EXCLUDED."packageNo", "trackingNo" = EXCLUDED."trackingNo", carrier = EXCLUDED.carrier,
-        "cancelledAt" = EXCLUDED."cancelledAt", "cancelReason" = EXCLUDED."cancelReason", "cancelBy" = EXCLUDED."cancelBy",
-        "beforeStatus" = EXCLUDED."beforeStatus", "labelPrintedAt" = EXCLUDED."labelPrintedAt",
-        "pickPrintedAt" = EXCLUDED."pickPrintedAt", "packedAt" = EXCLUDED."packedAt", items = EXCLUDED.items,
-        "needsFind" = "CancelHunt"."needsFind" OR EXCLUDED."needsFind", "updatedAt" = now()
-      RETURNING "needsFind", (xmax = 0) AS inserted`;
-    newFind = (inserted as { needsFind: boolean; inserted?: boolean }[]).filter((r) => r.inserted && r.needsFind).length;
+  const todayRecords = rows.filter((r) => r.id != null).map((r) => toRecord(r, today));
+  const seen = new Set(todayRecords.map((r) => r.bsOrderId));
+  const backRecords = backRows.filter((r) => r.id != null && !seen.has(String(r.id))).map((r) => toRecord(r, today));
+  const { newFind, days } = await storeRecords([...todayRecords, ...backRecords]);
 
-    // จับคู่กับพัสดุในใบนำจ่ายของเรา — บอกได้ว่าอยู่ใบไหน กรงไหน ขึ้นรถคันไหน (เลขแทร็คก่อน · ไม่มีค่อยใช้เลขออเดอร์)
-    await db.$executeRaw`
-      UPDATE "CancelHunt" c SET "parcelId" = p.id
-      FROM "ManifestParcel" p
-      WHERE c.day = ${day} AND c."parcelId" IS NULL AND c."trackingNo" IS NOT NULL AND p."trackingNo" = c."trackingNo"`;
-    await db.$executeRaw`
-      UPDATE "CancelHunt" c SET "parcelId" = p.id
-      FROM "ManifestParcel" p
-      WHERE c.day = ${day} AND c."parcelId" IS NULL AND c."orderNo" IS NOT NULL AND p."orderNo" = c."orderNo"`;
+  const mustFind = todayRecords.filter((r) => r.needsFind).length;
+  let message = `ยกเลิกวันนี้ ${todayRecords.length} ใบ · ต้องหาของ ${mustFind} ใบ`;
+  if (backRan) message += ` · ย้อนหลัง ${backDays()} วัน (กำลังดำเนินการ/รอรับสินค้า) ${backRecords.length} ใบ`;
+  if (newFind) message += ` · ใหม่ ${newFind}`;
+  // ส่งลง Google Sheets (แท็บของวันที่ยกเลิก คอลัมน์ S เป็นต้นไป) — วันนี้ทุกรอบ · วันเก่าเฉพาะรอบที่ดึงย้อนหลัง
+  // พังก็ไม่ทำให้รอบดึงล้ม แค่บอกในข้อความ
+  for (const d of [today, ...(backRan ? days.filter((x) => x !== today).sort() : [])]) {
+    const sheet = await pushHuntToSheets(d);
+    if (sheet && (d === today || sheet.includes("ไม่สำเร็จ"))) message += ` · ${sheet}`;
   }
-
-  const mustFind = records.filter((r) => r.needsFind).length;
-  let message = `ยกเลิกวันนี้ ${records.length} ใบ · ต้องหาของ ${mustFind} ใบ${newFind ? ` · ใหม่ ${newFind}` : ""}`;
-  // ส่งลง Google Sheets (แท็บของวันนี้ คอลัมน์ S เป็นต้นไป) — พังก็ไม่ทำให้รอบดึงล้ม แค่บอกในข้อความ
-  const sheet = await pushHuntToSheets(day);
-  if (sheet) message += ` · ${sheet}`;
   await db.syncRun.update({
     where: { id: LOCK_ID },
-    data: { ok: true, finishedAt: new Date(), count: records.length, errorKind: null, message },
+    data: { ok: true, finishedAt: new Date(), count: todayRecords.length + backRecords.length, errorKind: null, message },
   });
-  return { ran: true, ok: true, message, total: records.length, newFind };
+  return { ran: true, ok: true, message, total: todayRecords.length, newFind };
 }
 
 /** ดึงล่าสุดเมื่อไหร่ / ผลเป็นยังไง — โชว์บนหน้า */

@@ -95,11 +95,14 @@ export const TIME_TYPE_CANCEL = 5;
  * วนหน้าให้ครบเอง (สูงสุด 300 แถว/หน้า)
  *
  * @param {object} [opt]
- * @param {number} [opt.days=0]  0 = วันนี้ · 1 = เมื่อวาน (ตามปุ่มในหน้าเว็บ)
+ * @param {number} [opt.days=0]  0 = วันนี้ · 1 = เมื่อวาน · 7 = 7 วันล่าสุด (ตามปุ่มในหน้าเว็บ)
+ * @param {string} [opt.beforeStatus] กรองสถานะก่อนยกเลิก (โค้ด) — ✅ ยิงจริงแล้ว 25 พ.ย. 2026:
+ *   'processing' = To Ship / กำลังดำเนินการ (แพ็ก/พิมพ์ใบแล้ว) · 'pickup' = To Pickup / รอรับสินค้า · 'shipped' = ส่งแล้ว
+ *   ('new' / 'unpaid' BigSeller ตอบ error)
  * @returns {Promise<{rows: object[], totalSize: number}>}
  */
 export async function listCancelledByDay(opt = {}) {
-  const { days = 0 } = opt;
+  const { days = 0, beforeStatus = null } = opt;
   const rows = [];
   let totalSize = 0;
   for (let pageNo = 1; ; pageNo++) {
@@ -108,6 +111,7 @@ export async function listCancelledByDay(opt = {}) {
       status: 'canceled',
       timeType: TIME_TYPE_CANCEL,
       days,
+      ...(beforeStatus ? { inCancelBeforeStatus: beforeStatus } : {}),
       desc: 1,
       orderBy: 'paidTime',
       pageNo,
