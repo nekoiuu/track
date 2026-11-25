@@ -86,6 +86,41 @@ export async function searchCancelledOrders(orderNos) {
   return rows;
 }
 
+/** timeType ของตัวกรองเวลาในหน้าออเดอร์ — 5 = Cancel Time (ดักจากหน้าเว็บจริง 25 พ.ย. 2026) */
+export const TIME_TYPE_CANCEL = 5;
+
+/**
+ * ออเดอร์ที่ "ยกเลิก" ตามวันที่ยกเลิก — เหมือนแท็บ Canceled + Cancel Time + Today ในหน้าเว็บ
+ * ✅ ยิงจริงแล้ว: days 0 = วันนี้ (เวลาไทยตามบัญชี) ได้ 269 ใบในหน้าเดียว · days 1 = เมื่อวาน
+ * วนหน้าให้ครบเอง (สูงสุด 300 แถว/หน้า)
+ *
+ * @param {object} [opt]
+ * @param {number} [opt.days=0]  0 = วันนี้ · 1 = เมื่อวาน (ตามปุ่มในหน้าเว็บ)
+ * @returns {Promise<{rows: object[], totalSize: number}>}
+ */
+export async function listCancelledByDay(opt = {}) {
+  const { days = 0 } = opt;
+  const rows = [];
+  let totalSize = 0;
+  for (let pageNo = 1; ; pageNo++) {
+    const data = await post(PATH, {
+      ...buildSearchBody([], { allOrder: false }),
+      status: 'canceled',
+      timeType: TIME_TYPE_CANCEL,
+      days,
+      desc: 1,
+      orderBy: 'paidTime',
+      pageNo,
+      pageSize: MAX_ROWS_PER_PAGE,
+    });
+    const page = data.page ?? {};
+    totalSize = page.totalSize ?? rows.length;
+    rows.push(...(page.rows ?? []));
+    if (pageNo >= (page.totalPage ?? 1) || !(page.rows ?? []).length) break;
+  }
+  return { rows, totalSize };
+}
+
 /**
  * @param {string[]} orderNos
  * @param {object} [opt] เหมือน searchOrders + chunkSize (เลขต่อ request · ค่าเริ่มต้น CHUNK_SIZE)

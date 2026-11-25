@@ -90,10 +90,10 @@ export type CageInfo = {
 };
 
 /** เช็คยกเลิกทุกเท่านี้ (server ล็อกรอบไว้ — หลายเครื่องเปิดพร้อมกันก็ยิง BigSeller แค่ 1 รอบ) */
-const CANCEL_POLL_MS = 30_000;
+const CANCEL_POLL_MS = 60_000;
 
 /**
- * งานที่กำลังทำ: เช็คออเดอร์ยกเลิกเงียบ ๆ ทุก 30 วิ ตอนหน้านี้เปิดอยู่บนจอ
+ * งานที่กำลังทำ: เช็คออเดอร์ยกเลิกเงียบ ๆ ทุก 60 วิ ตอนหน้านี้เปิดอยู่บนจอ
  * ไม่มี spinner ไม่มี toast ตอนปกติ · โหลดหน้าใหม่เฉพาะตอนจำนวนยกเลิกเปลี่ยน
  */
 function useCancelWatch(pickupId: string, enabled: boolean, count: number, goods: number) {

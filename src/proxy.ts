@@ -28,6 +28,6 @@ export const config = {
     // ทุกหน้า ยกเว้นไฟล์ของ Next / ไฟล์ static
     // และ keepalive ของ cron (มี CRON_SECRET ตรวจเองอยู่แล้ว) · webhook ของ LINE (ตรวจลายเซ็นเอง) · รายงานประจำวัน (ตรวจกุญแจเอง)
     // · manifest ของ PWA (เบราว์เซอร์ขอโดยไม่ส่ง cookie) · API เช็คสถานะ Flash (ตรวจ login หรือ FLASH_API_KEY เอง) · webhook ของ Flash (ตรวจลายเซ็นเอง) · อัปเดตสถานะเบื้องหลัง (ตรวจกุญแจเอง) · ลิงก์สาธารณะดูสถานะ /share (ไม่ต้อง login)
-    "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.webmanifest|sw\\.js|offline\\.html|api/bigseller/keepalive|api/line/webhook|api/line/daily|api/flash/track|api/flash/webhook|api/track/tick|api/track/health|share/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|txt|xml)$).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.webmanifest|sw\\.js|offline\\.html|api/bigseller/keepalive|api/line/webhook|api/line/daily|api/flash/track|api/flash/webhook|api/track/tick|api/track/health|api/cancels/tick|api/cancels/received|share/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|txt|xml)$).*)",
   ],
 };

@@ -15,6 +15,7 @@ export async function register() {
 
   startDailyReportTimer();
   startTrackingTickTimer();
+  startCancelHuntTimer();
 
   const { keepAlive, KEEPALIVE_MINUTES } = await import("./lib/bigseller-session");
   if (!KEEPALIVE_MINUTES) return;
@@ -61,6 +62,32 @@ function startTrackingTickTimer() {
     }
   };
   setTimeout(tick, 90_000).unref();
+  setInterval(tick, minutes * 60_000).unref();
+}
+
+/**
+ * ตามหาของยกเลิก — ดึงออเดอร์ที่ยกเลิกวันนี้จาก BigSeller ทุก CANCEL_HUNT_MINUTES นาที (ค่าเริ่มต้น 5, ใส่ 0 = ปิด)
+ * ยิงไปที่ /api/cancels/tick ของตัวเอง → src/lib/cancel-hunt.ts
+ */
+function startCancelHuntTimer() {
+  const raw = process.env.CANCEL_HUNT_MINUTES?.trim();
+  if (raw === "0") return;
+  const minutes = Number(raw) > 0 ? Number(raw) : 5;
+  const g = globalThis as unknown as { __shippedInternalKey?: string };
+  g.__shippedInternalKey ??= crypto.randomUUID();
+
+  const tick = async () => {
+    const port = process.env.PORT;
+    if (!port) return;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/cancels/tick`, { headers: { "x-internal-key": g.__shippedInternalKey! } });
+      const r = (await res.json()) as { ran?: boolean; ok?: boolean; message?: string };
+      if (r.ran) console.log(`[cancel-hunt] ${r.ok ? "" : "ไม่สำเร็จ — "}${r.message}`);
+    } catch (e) {
+      console.warn("[cancel-hunt] เรียกดึงยกเลิกไม่สำเร็จ:", (e as Error).message);
+    }
+  };
+  setTimeout(tick, 45_000).unref();
   setInterval(tick, minutes * 60_000).unref();
 }
 

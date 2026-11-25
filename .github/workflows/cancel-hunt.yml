@@ -1,0 +1,37 @@
+# ดึงออเดอร์ที่ยกเลิกวันนี้จาก BigSeller ทุก 5 นาที → หน้า "ตามของยกเลิก" (/cancel-hunt)
+#
+# ทำไม: แอปรันบน Vercel (serverless) — ไม่มี timer ค้างไว้ ต้องให้ cron ภายนอกเรียก /api/cancels/tick
+# (รันเซิร์ฟเวอร์ค้างไว้เองด้วย npm start ไม่ต้องใช้ไฟล์นี้ — instrumentation.ts เรียกเองทุก 5 นาที)
+# ทุกเครื่องใช้ล็อกเดียวกันใน DB — เรียกถี่เกินก็ข้ามเอง ไม่ยิง BigSeller ซ้ำ
+#
+# ตั้งค่าครั้งเดียว (GitHub → repo → Settings → Secrets and variables → Actions → New repository secret):
+#   CANCEL_HUNT_URL = https://<โดเมนของแอป>/api/cancels/tick
+#   CRON_SECRET     = ค่าเดียวกับ CRON_SECRET ใน Environment Variables ของ Vercel (ตัวเดียวกับ keep-alive)
+#
+# หมายเหตุ: 5 นาทีคือถี่สุดที่ GitHub ยอม และช่วงคนใช้เยอะอาจเลื่อนไปบ้าง · หน้าเว็บดึงเองด้วยถ้าข้อมูลเก่ากว่า 5 นาที
+name: Cancel hunt
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Pull today's cancelled orders
+        env:
+          CANCEL_HUNT_URL: ${{ secrets.CANCEL_HUNT_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CANCEL_HUNT_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "ยังไม่ได้ตั้ง secrets CANCEL_HUNT_URL / CRON_SECRET"; exit 1
+          fi
+          # -f: 401 (secret ไม่ตรง) / 503 (BigSeller ไม่ผ่าน) → job แดง
+          curl -fsS --max-time 60 --retry 2 --retry-delay 10 \
+            -H "Authorization: Bearer $CRON_SECRET" "$CANCEL_HUNT_URL"
+          echo

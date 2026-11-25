@@ -265,7 +265,7 @@ const WHITE: Rgb = { red: 1, green: 1, blue: 1 };
  * ทุกแถวกำหนดพื้นเสมอ (ไม่มีสถานะ = ขาว) — กันแถวใหม่รับสีจากแถวข้างบน · ตัดคำ ชิดบน (สินค้าหลายบรรทัดอ่านง่าย)
  * แถวติดกันที่สีเหมือนกันรวมเป็นคำสั่งเดียว
  */
-function rowFormats(sheetId: number, firstRow: number, width: number, rows: SheetRow[]) {
+function rowFormats(sheetId: number, firstRow: number, width: number, rows: SheetRow[], startCol = 0) {
   const requests: object[] = [];
   const same = (a?: Rgb, b?: Rgb) => JSON.stringify(a ?? WHITE) === JSON.stringify(b ?? WHITE);
   for (let i = 0; i < rows.length; ) {
@@ -273,7 +273,7 @@ function rowFormats(sheetId: number, firstRow: number, width: number, rows: Shee
     while (j < rows.length && same(rows[j].tint, rows[i].tint)) j++;
     requests.push({
       repeatCell: {
-        range: { sheetId, startRowIndex: firstRow - 1 + i, endRowIndex: firstRow - 1 + j, startColumnIndex: 0, endColumnIndex: width },
+        range: { sheetId, startRowIndex: firstRow - 1 + i, endRowIndex: firstRow - 1 + j, startColumnIndex: startCol, endColumnIndex: startCol + width },
         cell: { userEnteredFormat: { backgroundColor: rows[i].tint ?? WHITE, textFormat: { bold: false }, wrapStrategy: "WRAP", verticalAlignment: "TOP" } },
         fields: "userEnteredFormat(backgroundColor,textFormat.bold,wrapStrategy,verticalAlignment)",
       },
@@ -285,7 +285,7 @@ function rowFormats(sheetId: number, firstRow: number, width: number, rows: Shee
       if (col < 0) continue;
       requests.push({
         repeatCell: {
-          range: { sheetId, startRowIndex: firstRow - 1 + i, endRowIndex: firstRow + i, startColumnIndex: col, endColumnIndex: col + 1 },
+          range: { sheetId, startRowIndex: firstRow - 1 + i, endRowIndex: firstRow + i, startColumnIndex: startCol + col, endColumnIndex: startCol + col + 1 },
           cell: { userEnteredFormat: { backgroundColor: r.strong!.color, textFormat: { bold: true } } },
           fields: "userEnteredFormat(backgroundColor,textFormat.bold)",
         },
@@ -500,5 +500,93 @@ export async function updateStatusCells(cells: StatusCell[], { dryRun = false }:
   // ยิงรวมทีเดียว: ค่า 1 request + สี 1 request
   if (valueData.length) await call("/values:batchUpdate", { method: "POST", body: JSON.stringify({ valueInputOption: "RAW", data: valueData }) });
   if (formatRequests.length) await call(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: formatRequests }) });
+  return result;
+}
+
+// ─────────────────────────────────────────────── บล็อกข้าง ๆ ในแท็บรายวัน (ตามของยกเลิก)
+
+/** เลขคอลัมน์ (เริ่ม 0) → ตัวอักษร A…Z, AA… */
+export function colName(i: number): string {
+  let s = "";
+  for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+  return s;
+}
+
+/**
+ * เขียนบล็อกตารางแยกไว้ทางขวาของแท็บรายวัน (เช่น เริ่มคอลัมน์ S เว้น R ว่างไว้ 1 ช่องคั่นจากตารางหลัก A–Q)
+ * - แถว 1 = หัวของบล็อก · แถวถัดไป = ข้อมูล หาแถวเดิมด้วยช่อง key (keyCol นับในบล็อก)
+ * - เจอแล้ว = เขียนทับแถวเดิม · ยังไม่มี = ต่อท้ายบล็อก (นับจากแถวสุดท้ายของบล็อกเอง ไม่ยุ่งตารางหลัก)
+ * - ยังไม่มีแท็บวันนั้น → สร้างพร้อมหัวตารางหลัก (ตารางหลักส่งตามมาทีหลังได้ตามปกติ)
+ * - คอลัมน์ไม่พอ (แท็บเก่ามีถึง Z) → เพิ่มคอลัมน์ให้
+ */
+export async function upsertSideBlock(tab: string, startCol: number, header: string[], items: KeyedRow[], keyCol: number) {
+  const res = (await call(`?fields=${encodeURIComponent("sheets.properties(sheetId,title,gridProperties.columnCount)")}`)) as {
+    sheets?: { properties: { sheetId: number; title: string; gridProperties?: { columnCount?: number } } }[];
+  };
+  const found = res.sheets?.find((x) => x.properties.title === tab)?.properties;
+  let sheetId = found?.sheetId;
+  let columns = found?.gridProperties?.columnCount ?? 26;
+  if (sheetId == null) {
+    sheetId = await createTab(tab, SHEET_COLUMNS);
+    columns = 26;
+  }
+  const endCol = startCol + header.length; // ไม่รวม
+  if (columns < endCol) {
+    await call(":batchUpdate", {
+      method: "POST",
+      body: JSON.stringify({ requests: [{ appendDimension: { sheetId, dimension: "COLUMNS", length: endCol - columns } }] }),
+    });
+  }
+
+  const first = colName(startCol);
+  const last = colName(endCol - 1);
+  const cur = (await call(`/values/${encodeURIComponent(tabRange(tab, `${first}1:${last}`))}`)) as { values?: unknown[][] };
+  const values = cur.values ?? [];
+  const requests: object[] = [];
+
+  // หัวของบล็อก (แถว 1) — ไม่ตรงก็เขียนใหม่
+  const head = (values[0] ?? []).map((v) => String(v ?? "").trim());
+  if (head.length !== header.length || header.some((h, i) => h !== head[i])) {
+    await call(`/values/${encodeURIComponent(tabRange(tab, `${first}1`))}?valueInputOption=RAW`, { method: "PUT", body: JSON.stringify({ values: [header] }) });
+    requests.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: startCol, endColumnIndex: endCol },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { bold: true },
+            wrapStrategy: "WRAP",
+            verticalAlignment: "MIDDLE",
+            backgroundColor: { red: 0.99, green: 0.89, blue: 0.89 },
+          },
+        },
+        fields: "userEnteredFormat(textFormat,wrapStrategy,verticalAlignment,backgroundColor)",
+      },
+    });
+  }
+
+  const rowOf = new Map<string, number>();
+  let lastRow = 1;
+  values.forEach((r, i) => {
+    if (i === 0) return;
+    if (r.some((v) => String(v ?? "").trim())) lastRow = i + 1;
+    const k = normNo(r[keyCol]);
+    if (k) rowOf.set(k, i + 1);
+  });
+
+  const data: { range: string; values: (string | number)[][] }[] = [];
+  const result = { appended: 0, updated: 0 };
+  for (const { key, row } of items) {
+    let rowNo = rowOf.get(normNo(key));
+    if (rowNo) result.updated++;
+    else {
+      rowNo = ++lastRow;
+      rowOf.set(normNo(key), rowNo);
+      result.appended++;
+    }
+    data.push({ range: tabRange(tab, `${first}${rowNo}:${last}${rowNo}`), values: [row.values] });
+    requests.push(...rowFormats(sheetId, rowNo, header.length, [row], startCol));
+  }
+  if (data.length) await call("/values:batchUpdate", { method: "POST", body: JSON.stringify({ valueInputOption: "USER_ENTERED", data }) });
+  if (requests.length) await call(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
   return result;
 }

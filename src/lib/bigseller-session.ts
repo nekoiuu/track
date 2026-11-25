@@ -64,7 +64,20 @@ export async function loadApi() {
   return api;
 }
 
-/** บันทึกผลการยิง — auth error = จำ cookie นี้ไว้ว่าตาย จะได้ไม่ keep-alive ซ้ำ */
+/** โดน "ยิงถี่เกิน" แล้วพักทุกอย่างที่ยิง BigSeller นานเท่านี้ — ยิงต่อตอนโดนจำกัดยิ่งเสี่ยงโดนบล็อก/cookie ตาย */
+export const RATE_LIMIT_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * กำลังพักหลังโดน rate-limit ไหม (ใช้แถว session ที่อ่านอยู่แล้ว ไม่ต้อง query เพิ่ม)
+ * พัก = error ล่าสุดเป็น rate-limit ภายใน 10 นาที และยังไม่มีอะไรยิงผ่านหลังจากนั้น
+ */
+export function coolingDown(s: { lastErrorKind: string | null; lastErrorAt: Date | null; lastOkAt: Date | null } | null) {
+  if (!s || s.lastErrorKind !== "rate-limit" || !s.lastErrorAt) return false;
+  if (s.lastOkAt && s.lastOkAt > s.lastErrorAt) return false;
+  return Date.now() - s.lastErrorAt.getTime() < RATE_LIMIT_COOLDOWN_MS;
+}
+
+/** บันทึกผลการยิง — auth error = จำ cookie นี้ไว้ว่าตาย จะได้ไม่ keep-alive ซ้ำ · rate-limit = ทั้งระบบพัก 10 นาที (coolingDown) */
 export async function recordResult(api: Api, err?: Error & { kind?: string }) {
   await saving;
   const now = new Date();
@@ -106,14 +119,16 @@ export const KEEPALIVE_MINUTES = Number(process.env.BIGSELLER_KEEPALIVE_MINUTES 
  * ข้ามรอบเมื่อ: ไม่มี cookie / cookie นี้โดน auth error ไปแล้ว / เพิ่งยิงผ่านภายในรอบนี้
  * → วันละไม่เกิน 96 ครั้ง (ทุก 15 นาที) และไม่ยิงซ้ำด้วย cookie ที่ตายแล้ว
  */
-export async function keepAlive({ force = false } = {}) {
+export async function keepAlive({ force = false, minutes = KEEPALIVE_MINUTES } = {}) {
   const api = await loadApi();
   const s = await getSession();
   if (!s?.cookie) return { ran: false, reason: "ยังไม่มี cookie" };
   if (!force && s.deadCookie === s.cookie) return { ran: false, reason: "cookie ใช้ไม่ได้แล้ว รอแปะใหม่" };
+  if (!force && coolingDown(s)) return { ran: false, reason: "พักหลังโดนจำกัดการยิง (rate-limit)" };
 
+  // ระบบยิงผ่านไปเมื่อไม่นาน (มีคนใช้อยู่) = session ยังสด ไม่ต้องยิงเพิ่ม
   const lastOk = Math.max(api.getLastOkAt(), s.lastOkAt?.getTime() ?? 0);
-  if (!force && Date.now() - lastOk < KEEPALIVE_MINUTES * 60_000 * 0.9) {
+  if (!force && Date.now() - lastOk < minutes * 60_000 * 0.9) {
     return { ran: false, reason: "เพิ่งยิงผ่านไป ไม่ต้องต่ออายุ" };
   }
 

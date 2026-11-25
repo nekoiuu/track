@@ -247,6 +247,51 @@ model ReturnScan {
   @@index([parcelId])
 }
 
+/// ผลตามหาของยกเลิก
+enum CancelHuntStatus {
+  PENDING // ยังไม่มีใครหา
+  FOUND // เจอของแล้ว ดึงออกจากกอง/กรงแล้ว
+  MISSING // หาแล้วไม่เจอ (อาจขึ้นรถไปแล้ว)
+  SKIPPED // ไม่ต้องหา — ยังไม่ได้หยิบ/แพ็ก (คนกดข้ามเอง)
+}
+
+/// ออเดอร์ที่ยกเลิกใน BigSeller (ดึงทุก 5 นาที เฉพาะที่ยกเลิกวันนี้) — ให้เจ้าหน้าที่ตามหาของออกมาก่อนขึ้นรถ
+/// 1 แถว = 1 แพ็ก (BSG…) · ของที่พิมพ์ใบปะหน้า/แพ็กแล้ว = needsFind (ต้องหา) · ยังไม่จ่าย/ยังไม่หยิบ = ไม่ต้องหา
+model CancelHunt {
+  id             String           @id @default(cuid())
+  bsOrderId      String           @unique // id ภายในของ BigSeller (แถวใน pageList)
+  day            String // "YYYY-MM-DD" วันที่ยกเลิกตามเวลาไทย
+  packageNo      String?
+  orderNo        String? // เลขออเดอร์ฝั่งแพลตฟอร์ม
+  platform       String?
+  shopName       String?
+  trackingNo     String?
+  carrier        String? // ขนส่ง เช่น TikTok-TH-Flash Express Thailand
+  cancelledAt    DateTime?
+  cancelReason   String?
+  cancelBy       String? // Buyer / Seller / System
+  beforeStatus   String? // สถานะก่อนยกเลิก เช่น New, To Ship, To Pickup, unpaid
+  labelPrintedAt DateTime? // พิมพ์ใบปะหน้าเมื่อไหร่ (null = ยังไม่พิมพ์)
+  pickPrintedAt  DateTime?
+  packedAt       DateTime?
+  /// สินค้า [{ sku, name, qty, img }]
+  items          Json?
+  /// ต้องตามหาของไหม — คิดจาก BigSeller ตอนดึง (พิมพ์ใบปะหน้า / มีเลขแทร็ค / แพ็กแล้ว)
+  needsFind      Boolean          @default(false)
+  /// พัสดุในใบนำจ่ายของเรา (ถ้าสแกนลงใบแล้ว) — ใช้บอกว่าอยู่ใบไหน กรงไหน รถคันไหน
+  parcelId       String?
+  status         CancelHuntStatus @default(PENDING)
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  note           String?
+  firstSeenAt    DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([day, needsFind, status])
+  @@index([trackingNo])
+  @@index([packageNo])
+}
+
 /// cookie BigSeller ล่าสุด (มีแถวเดียว id = "default")
 /// BigSeller หมุน cookie ผ่าน Set-Cookie → เก็บค่าใหม่ที่นี่ทุกครั้ง แทนการแก้ .env
 model BigSellerSession {

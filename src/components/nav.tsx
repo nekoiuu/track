@@ -13,6 +13,7 @@ import {
   LayoutDashboardIcon,
   LogOutIcon,
   MessageCircleIcon,
+  PackageSearchIcon,
   PlayIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -41,6 +42,7 @@ const GROUPS: { title: string; links: NavLink[] }[] = [
       { href: "/", label: "หน้าแรก", icon: LayoutDashboardIcon },
       { href: "/pickups", label: "รอบรถ", icon: TruckIcon },
       { href: "/manifests", label: "ใบนำจ่าย", icon: FileTextIcon },
+      { href: "/cancel-hunt", label: "ตามของยกเลิก", short: "ตามยกเลิก", icon: PackageSearchIcon },
     ],
   },
   {

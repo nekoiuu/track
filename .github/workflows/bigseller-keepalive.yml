@@ -1,0 +1,36 @@
+# ต่ออายุ cookie BigSeller ทุก 10 นาที ตลอด 24 ชม.
+#
+# ทำไม: แอปรันบน Vercel (serverless) — ไม่มีคนใช้ = ไม่มีอะไรยิง BigSeller เลย 12–19 ชม. ทุกคืน → cookie ตาย ต้องแปะใหม่ทุกวัน
+# ตัวนี้เรียก /api/bigseller/keepalive ซึ่งยิงจริงเฉพาะตอนเงียบเกิน ~9 นาที (ช่วงมีคนใช้จะข้ามเอง ไม่เพิ่มภาระ BigSeller)
+#
+# ตั้งค่าครั้งเดียว (GitHub → repo → Settings → Secrets and variables → Actions → New repository secret):
+#   KEEPALIVE_URL = https://<โดเมนของแอป>/api/bigseller/keepalive
+#   CRON_SECRET   = ค่าเดียวกับ CRON_SECRET ใน Environment Variables ของ Vercel
+#
+# หมายเหตุ: GitHub อาจเลื่อนรอบตามเวลาได้บ้าง (ช่วงคนใช้เยอะ) จึงตั้ง 10 นาที ให้เผื่อไว้
+name: BigSeller keep-alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # กดรันเองได้ที่แท็บ Actions (ไว้ทดสอบ)
+
+permissions: {}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping keep-alive
+        env:
+          KEEPALIVE_URL: ${{ secrets.KEEPALIVE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$KEEPALIVE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "ยังไม่ได้ตั้ง secrets KEEPALIVE_URL / CRON_SECRET"; exit 1
+          fi
+          # -f: ได้ 401 (secret ไม่ตรง) / 503 (cookie ไม่ผ่าน) → job แดง
+          curl -fsS --max-time 60 --retry 2 --retry-delay 10 \
+            -H "Authorization: Bearer $CRON_SECRET" "$KEEPALIVE_URL"
+          echo

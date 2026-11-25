@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "./db";
 import { linkPendingPickupManifests } from "./manifests";
 import { after } from "next/server";
-import { getSession, loadApi, recordResult } from "./bigseller-session";
+import { coolingDown, getSession, loadApi, recordResult } from "./bigseller-session";
 import { notifyCancelledAfter } from "./line-messages";
 import type { ParcelStatus } from "@/generated/prisma/enums";
 import type { ParcelItem } from "./products";
@@ -19,7 +19,8 @@ export const hasCookie = async () => Boolean((await getSession().catch(() => nul
 /** มี cookie และยังไม่โดน auth error — ใช้ตัดสินว่าควรยิงอัตโนมัติไหม */
 export async function canCallBigSeller() {
   const s = await getSession().catch(() => null);
-  return Boolean(s?.cookie) && s!.deadCookie !== s!.cookie;
+  // โดนจำกัดการยิง → ทุกอย่างพักพร้อมกัน 10 นาที (เช็คยกเลิก/ดึงสินค้า/ดึงสถานะ) ไม่ต่างคนต่างยิงซ้ำจนโดนบล็อก
+  return Boolean(s?.cookie) && s!.deadCookie !== s!.cookie && !coolingDown(s);
 }
 
 /**
@@ -396,11 +397,11 @@ function statusFromBigSeller(
 
 // ─────────────────────────────────────────────── เฝ้าออเดอร์ยกเลิกในงานที่กำลังทำ
 
-/** เช็คยกเลิกถี่สุดเท่านี้ — ทุกเครื่องที่เปิดงานอยู่ใช้รอบเดียวกัน (ไม่ยิงซ้ำตามจำนวนเครื่อง) */
-export const CANCEL_WATCH_EVERY_MS = 30_000;
+/** เช็คยกเลิกถี่สุดเท่านี้ (60 วิ — ช่วงพีค ~2 request/นาที ไม่เสี่ยงโดนจำกัด) — ทุกเครื่องที่เปิดงานอยู่ใช้รอบเดียวกัน (ไม่ยิงซ้ำตามจำนวนเครื่อง) */
+export const CANCEL_WATCH_EVERY_MS = 60_000;
 /** BigSeller ปฏิเสธ (rate-limit / cookie / เน็ต) → พักนานขึ้น ไม่ยิงซ้ำจนพัง */
 const CANCEL_WATCH_BACKOFF_MS = 5 * 60_000;
-/** แถว SyncRun แถวเดียวใช้เป็นตัวล็อกรอบ — ไม่สร้างแถวใหม่ทุก 30 วิ (ตารางจะบวม) */
+/** แถว SyncRun แถวเดียวใช้เป็นตัวล็อกรอบ — ไม่สร้างแถวใหม่ทุกนาที (ตารางจะบวม) */
 const CANCEL_WATCH_ID = "cancel-watch";
 
 const CANCELLED_STATES = ["canceled", "cancelled", "cancel"];

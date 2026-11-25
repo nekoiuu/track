@@ -120,7 +120,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
   // แท็บรายวันใน Google Sheets ที่แถวของงานนี้จะไปลง (ตามวันที่รถเข้ารับ)
   const sheetTab = dailyTabName(pickup.arrivedAt);
   const allParcels = pickup.manifests.flatMap((pm) => pm.manifest?.parcels ?? []);
-  // ออเดอร์ที่ยกเลิกในแต่ละกรง — ให้เจ้าหน้าที่หยิบออกก่อนขึ้นรถ (หน้างานเช็ค BigSeller ให้เองทุก 30 วิ)
+  // ออเดอร์ที่ยกเลิกในแต่ละกรง — ให้เจ้าหน้าที่หยิบออกก่อนขึ้นรถ (หน้างานเช็ค BigSeller ให้เองทุก 60 วิ)
   const isCancelled = (p: { bsState: string | null }) => p.bsState != null && BS_CANCELLED_STATES.includes(p.bsState);
   const cancelledByCage = new Map<string, { trackingNo: string; orderNo: string | null }[]>();
   for (const pm of pickup.manifests) {
