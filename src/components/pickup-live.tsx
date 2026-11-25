@@ -4,7 +4,7 @@ import Link from "next/link";
 import { type ReactNode, useActionState, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowRightLeftIcon, BanIcon, CheckCircle2Icon, EllipsisIcon, HashIcon, LockIcon, LockOpenIcon, Loader2Icon, MessageSquareTextIcon, MinusIcon, PencilIcon, PlusIcon, RotateCcwIcon, SplitIcon, Trash2Icon } from "lucide-react";
+import { ArrowRightLeftIcon, BanIcon, CheckCircle2Icon, EllipsisIcon, HashIcon, LockIcon, LockOpenIcon, Loader2Icon, MessageSquareTextIcon, MinusIcon, PencilIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SplitIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "cn";
 import {
@@ -26,6 +26,7 @@ import {
   setPickupManifestCount,
   type FormState,
 } from "@/app/actions/pickups";
+import { runCageFlash } from "@/app/actions/manifests";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,6 +43,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { isManifestInput } from "@/lib/format";
+import { cageBadge, cageTitle } from "@/lib/cage-name";
 import { Field } from "./kit";
 import { LiveTimer, useActionToast } from "./motion";
 
@@ -87,6 +89,11 @@ export type CageInfo = {
   cancelled?: { trackingNo: string; orderNo: string | null }[];
   /** กด "ขนหมดแล้ว" — ใบในกรงนี้จดเข้ารถคันอื่นอีกไม่ได้ · at = เวลา (จัดรูปแบบแล้ว) */
   done?: { by: string | null; at: string } | null;
+  /**
+   * สถานะ Flash ของชิ้นในกรงนี้ (เฉพาะขนส่ง Flash ไม่นับที่ยกเลิก) — ไม่มีชิ้น Flash = ไม่ใส่
+   * missing = เช็คแล้วแต่ Flash ยังไม่รับ (ขาด → หาในกรง)
+   */
+  flash?: { total: number; received: number; unchecked: number; missing: string[] } | null;
 };
 
 /** เช็คยกเลิกทุกเท่านี้ (server ล็อกรอบไว้ — หลายเครื่องเปิดพร้อมกันก็ยิง BigSeller แค่ 1 รอบ) */
@@ -365,6 +372,71 @@ function CancelledInCage({ items }: { items: { trackingNo: string; orderNo: stri
   );
 }
 
+/** สรุป Flash สั้น ๆ ใต้ชื่อกรง */
+function FlashLine({ f }: { f: NonNullable<CageInfo["flash"]> }) {
+  const all = !f.unchecked && !f.missing.length && f.received === f.total;
+  return (
+    <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs">
+      <span className={all ? "font-medium text-teal-deep" : "text-body"}>
+        Flash รับ {f.received}/{f.total}
+        {all && " ✓ ครบ"}
+      </span>
+      {f.missing.length > 0 && <span className="font-semibold text-error-deep">ขาด {f.missing.length}</span>}
+      {f.unchecked > 0 && <span className="text-mute">ยังไม่เช็ค {f.unchecked}</span>}
+    </p>
+  );
+}
+
+/**
+ * ปุ่มเช็ค Flash ของกรงนี้ — มีชิ้นที่ยังไม่เช็ค = เช็คเฉพาะกลุ่มนั้น (เร็ว) · ไม่มีแล้ว = เช็คทั้งกรงใหม่
+ * ปุ่มเดียว นิ้วโป้งกดได้ง่ายบนมือถือ
+ */
+function CageFlashButton({ pickupId, cageId, unchecked }: { pickupId: string; cageId: string; unchecked: number }) {
+  const [pending, start] = useTransition();
+  const check = () =>
+    start(async () => {
+      const r = await runCageFlash(pickupId, cageId, unchecked > 0);
+      if (!r) return;
+      if (r.ok) toast.success(r.message);
+      else toast.error(r.message, { duration: 10_000 });
+    });
+  return (
+    <Button
+      type="button"
+      variant={unchecked > 0 ? "default" : "outline"}
+      className="h-11 shrink-0 gap-1.5 self-start px-3 text-[13px]"
+      disabled={pending}
+      onClick={check}
+    >
+      {pending ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+      {pending ? "กำลังเช็ค…" : unchecked > 0 ? `เช็ค Flash (${unchecked})` : "เช็ค Flash"}
+    </Button>
+  );
+}
+
+/** ชิ้นที่ Flash ยังไม่รับ — เลขตัวใหญ่ ให้หาบนกล่องในกรง */
+function MissingInCage({ items }: { items: string[] }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, CANCELLED_PREVIEW);
+  return (
+    <div className="mb-2 rounded-xl bg-error-soft px-3 py-2">
+      <p className="text-sm font-semibold text-error-deep">Flash ยังไม่รับ {items.length} ชิ้น — หาในกรงนี้</p>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {shown.map((t) => (
+          <li key={t} className="font-mono text-base font-semibold tracking-tight text-ink">
+            {t}
+          </li>
+        ))}
+      </ul>
+      {items.length > CANCELLED_PREVIEW && (
+        <button type="button" onClick={() => setAll((v) => !v)} className="mt-1 h-8 text-xs font-medium text-error-deep hover:underline">
+          {all ? "ย่อ" : `ดูอีก ${items.length - CANCELLED_PREVIEW} ชิ้น`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CageCard({
   pickupId,
   cage,
@@ -446,18 +518,18 @@ function CageCard({
             setNameDraft(cage.label);
             setRenaming((v) => !v);
           }}
-          aria-label={`เปลี่ยนชื่อกรง ${cage.label}`}
+          aria-label={`เปลี่ยนชื่อ${cageTitle(cage.label)}`}
           className={cn(
             "grid size-9 shrink-0 place-items-center rounded-lg text-base font-bold disabled:cursor-default",
-            cage.label.length > 2 && "text-xs",
+            cageBadge(cage.label).length > 2 && "text-xs",
             cage.open && editable ? "bg-brand text-white" : "bg-ink/80 text-white",
           )}
         >
-          {cage.label}
+          {cageBadge(cage.label)}
         </button>
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-x-2 text-[15px] font-semibold">
-            กรง {cage.label}
+            {cageTitle(cage.label)}
             {cage.open && editable && (
               <span className="rounded-full bg-brand/10 px-2 py-0.5 text-xs font-medium text-brand-deep">กำลังยิงลงกรงนี้</span>
             )}
@@ -474,10 +546,13 @@ function CageCard({
               แบ่งกับ {cage.others.map((o) => `${o.plate} (${shareText(o, false)})`).join(", ")}
             </p>
           )}
+          {cage.flash && <FlashLine f={cage.flash} />}
         </div>
+        {cage.flash && cage.id !== "new" && <CageFlashButton pickupId={pickupId} cageId={cage.id} unchecked={cage.flash.unchecked} />}
       </header>
 
       {cage.cancelled && cage.cancelled.length > 0 && <CancelledInCage items={cage.cancelled} />}
+      {cage.flash && cage.flash.missing.length > 0 && <MissingInCage items={cage.flash.missing} />}
 
       {renaming && (
         <div className="mb-3 grid grid-cols-[1fr_auto] gap-2">
@@ -573,7 +648,7 @@ function CageCard({
         <div className="mt-2">
           {cage.open ? (
             <Button type="button" variant="secondary" className="h-11 w-full rounded-lg text-sm" disabled={pending || real.length === 0} onClick={() => run(() => closeCage(pickupId))}>
-              <LockIcon className="size-4" /> กรง {cage.label} เต็ม · เริ่มกรงใหม่
+              <LockIcon className="size-4" /> {cageTitle(cage.label)} เต็ม · เริ่มกรงใหม่
             </Button>
           ) : (
             <button

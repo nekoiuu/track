@@ -12,6 +12,7 @@ import { BS_CANCELLED_STATES } from "@/lib/tracking";
 import { notifyPickupClosed } from "@/lib/line-messages";
 import { refreshPickupStatuses } from "@/lib/status-report";
 import { lineConfigured } from "@/lib/line";
+import { cageTitle } from "@/lib/cage-name";
 import { applyCageShares, duplicateBlockReason, markCageDone, moveToCage, placeInCage, renameCage, tidyCage } from "@/lib/cages";
 import { canAccessPickup, requirePickupAccess, requirePickupManifestAccess } from "@/lib/pickup-access";
 
@@ -450,11 +451,11 @@ export async function closeCage(pickupId: string): Promise<ManifestActionResult>
   const user = await requirePickupAccess(pickupId);
   const open = await db.cage.findFirst({ where: { originPickupId: pickupId, closedAt: null }, select: { id: true, label: true, _count: { select: { manifests: true } } } });
   if (!open) return { ok: "ใบถัดไปจะขึ้นกรงใหม่" };
-  if (!open._count.manifests) return { error: `กรง ${open.label} ยังว่างอยู่ — ยิงใบลงก่อน` };
+  if (!open._count.manifests) return { error: `${cageTitle(open.label)} ยังว่างอยู่ — ยิงใบลงก่อน` };
   await db.cage.update({ where: { id: open.id }, data: { closedAt: new Date() } });
   audit(user, "cage.close", "pickup", pickupId, open.label);
   revalidatePath(`/pickups/${pickupId}`);
-  return { ok: `ปิดกรง ${open.label} แล้ว · ใบถัดไปขึ้นกรงใหม่` };
+  return { ok: `ปิด${cageTitle(open.label)} แล้ว · ใบถัดไปขึ้นกรงใหม่` };
 }
 
 /** เปิดกรงเดิมต่อ (ปิดผิด) — กรงที่เปิดอยู่อีกอันถูกปิดแทน */
@@ -467,7 +468,7 @@ export async function reopenCage(pickupId: string, cageId: string): Promise<Mani
   await db.cage.update({ where: { id: cageId }, data: { closedAt: null, doneAt: null, doneBy: null } });
   audit(user, "cage.reopen", "pickup", pickupId, cage.label);
   revalidatePath(`/pickups/${pickupId}`);
-  return { ok: `ยิงต่อลงกรง ${cage.label}` };
+  return { ok: `ยิงต่อลง${cageTitle(cage.label)}` };
 }
 
 /**
@@ -486,14 +487,14 @@ export async function setCageShare(pickupId: string, cageId: string, pick: { fra
   await applyCageShares(cageId);
 
   const label = count != null ? `${count} ชิ้น` : fraction == null ? "ที่เหลือ" : fraction === 1 ? "ทั้งกรง" : `${Math.round(fraction * 100)}%`;
-  audit(user, "cage.share", "pickup", pickupId, `กรง ${share.cage.label}: ${label}`);
+  audit(user, "cage.share", "pickup", pickupId, `${cageTitle(share.cage.label)}: ${label}`);
   revalidatePath("/", "layout");
 
   // รวมทุกคันเกินกรงไหม
   const all = await db.pickupCage.findMany({ where: { cageId }, select: { share: true, count: true } });
   const explicitFrac = all.reduce((n, s) => n + (s.share ?? 0), 0);
   const warn = all.length > 1 && all.every((s) => s.share != null || s.count != null) && explicitFrac > 1.001 ? "รวมทุกคันเกินทั้งกรง — เช็คอีกที" : undefined;
-  return { ok: `กรง ${share.cage.label}: คันนี้เอา${label}`, warn };
+  return { ok: `${cageTitle(share.cage.label)}: คันนี้เอา${label}`, warn };
 }
 
 /** ย้ายใบไปกรงอื่น (ยิงหลายกรงพร้อมกันแล้วลงผิดกรง) · target = cageId หรือ "new" = กรงใหม่ */
@@ -518,9 +519,9 @@ export async function setPickupCageDone(pickupId: string, cageId: string, done: 
   const inPickup = await db.pickupCage.findUnique({ where: { pickupId_cageId: { pickupId, cageId } }, select: { id: true } });
   if (!inPickup) return { error: "รถคันนี้ไม่ได้อยู่ในกรงนั้น" };
   const cage = await markCageDone(cageId, done, user.name);
-  audit(user, done ? "cage.done" : "cage.undone", "pickup", pickupId, `กรง ${cage.label}`);
+  audit(user, done ? "cage.done" : "cage.undone", "pickup", pickupId, `${cageTitle(cage.label)}`);
   revalidatePath("/", "layout");
-  return { ok: done ? `กรง ${cage.label} ขนหมดแล้ว — ใบในกรงนี้จดซ้ำไม่ได้แล้ว` : `กรง ${cage.label} ยังเหลือของ — จดใบในกรงนี้ได้อีก` };
+  return { ok: done ? `${cageTitle(cage.label)} ขนหมดแล้ว — ใบในกรงนี้จดซ้ำไม่ได้แล้ว` : `${cageTitle(cage.label)} ยังเหลือของ — จดใบในกรงนี้ได้อีก` };
 }
 
 export async function renamePickupCage(pickupId: string, cageId: string, label: string): Promise<ManifestActionResult> {
@@ -669,11 +670,11 @@ export async function checkBoxInPickup(pickupId: string, raw: string): Promise<{
   }
 
   const { p, link } = mine.find((x) => x.p.manifest.id === last?.manifestId) ?? mine[0];
-  const cageText = link.cage ? ` · กรง ${link.cage.label}` : "";
+  const cageText = link.cage ? ` · ${cageTitle(link.cage.label)}` : "";
   if (p.bsState && BS_CANCELLED_STATES.includes(p.bsState)) return { error: `กล่อง ${trackingNo} ออเดอร์ยกเลิก — หยิบออก (ใบ ${p.manifest.manifestNo}${cageText})` };
   if (!last || p.manifest.id === last.manifestId) return { ok: `✓ กล่องอยู่ในใบ ${p.manifest.manifestNo}${cageText} — ใบถูกต้อง` };
-  if (link.cage && link.cage.id === last.cage?.id) return { ok: `✓ กล่องอยู่ใบ ${p.manifest.manifestNo} กรงเดียวกัน (${link.cage.label})` };
+  if (link.cage && link.cage.id === last.cage?.id) return { ok: `✓ กล่องอยู่ใบ ${p.manifest.manifestNo} กรงเดียวกัน (${cageTitle(link.cage.label)})` };
   return {
-    warn: `กล่องนี้อยู่ใบ ${p.manifest.manifestNo}${cageText} — ไม่ใช่ใบที่เพิ่งยิง (${last.manifest?.manifestNo ?? "—"}${last.cage ? ` · กรง ${last.cage.label}` : ""}) เช็คว่าเอาใบถูกมาไหม`,
+    warn: `กล่องนี้อยู่ใบ ${p.manifest.manifestNo}${cageText} — ไม่ใช่ใบที่เพิ่งยิง (${last.manifest?.manifestNo ?? "—"}${last.cage ? ` · ${cageTitle(last.cage.label)}` : ""}) เช็คว่าเอาใบถูกมาไหม`,
   };
 }

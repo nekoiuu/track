@@ -1,29 +1,23 @@
 import "server-only";
 import { db } from "./db";
 import { dayRange, todayKey } from "./format";
+import { AUTO_PREFIX, cageTitle } from "./cage-name";
 
 /**
  * กรง — ของที่วางรวมกันหน้าร้าน 1 กรงมีหลาย manifest และอาจขึ้นรถหลายคัน
  *
  * จดยังไง:
- *   - ยิง manifest ต่อกันไปเรื่อย ๆ → ลงกรงที่ "เปิดอยู่" ของรถคันนี้ (ยังไม่มี = เปิดกรงใหม่ A, B, C… ให้เอง)
+ *   - ยิง manifest ต่อกันไปเรื่อย ๆ → ลงกรงที่ "เปิดอยู่" ของรถคันนี้ (ยังไม่มี = เปิดกรงใหม่ เลท1, เลท2… ให้เอง นับต่อกันทั้งวัน)
  *   - กด "ปิดกรง" → ใบถัดไปขึ้นกรงใหม่
  *   - ยิงใบที่อยู่ในกรงของรถคันอื่น → คันนี้ได้กรงนั้นทั้งกรง (ทุกใบในกรง) ส่วน "ที่เหลือ"
  * แบ่งยังไง: เลือกที่ระดับกรง (ทั้งกรง / ¾ / ½ / ¼ / นับได้ N / ที่เหลือ) → ระบบกระจายลงแต่ละใบ (PickupManifest.parcelCount)
  */
 
-/** A, B, …, Z, AA, AB… */
-const letters = (n: number) => {
-  let s = "";
-  for (let i = n; i >= 0; i = Math.floor(i / 26) - 1) s = String.fromCharCode(65 + (i % 26)) + s;
-  return s;
-};
-
-/** ชื่อกรงถัดไปของวันนี้ */
+/** ชื่อกรงถัดไปของวันนี้ — เลท1, เลท2, … นับต่อจากกรงทั้งวัน (ทุกรถ) เริ่ม 1 ใหม่ทุกวัน */
 async function nextLabel() {
   const today = dayRange(todayKey());
   const n = await db.cage.count({ where: { createdAt: today } });
-  return letters(n);
+  return `${AUTO_PREFIX}${n + 1}`;
 }
 
 /** กรงที่เปิดอยู่ของรถคันนี้ (เปิดเองและยังไม่ปิด) · ไม่มี = เปิดกรงใหม่ */
@@ -86,7 +80,7 @@ export async function placeInCage(pmId: string, pickupId: string, manifestId: st
     select: { label: true, shares: { where: { pickupId: { not: pickupId } }, select: { pickup: { select: { plate: true } } } } },
   });
   const plates = cage?.shares.map((s) => s.pickup.plate).join(", ") || "รถคันอื่น";
-  return `ใบนี้อยู่ในกรง ${cage?.label ?? ""} ที่แบ่งกับ ${plates} — ระบบแบ่งให้คร่าว ๆ ก่อน (คันที่ยังไม่เลือกได้ "ที่เหลือ" เฉลี่ยกัน)${added ? ` · เพิ่มอีก ${added} ใบในกรงให้แล้ว` : ""} · กดเลือก ทั้งกรง/½/นับได้ ที่การ์ดกรง`;
+  return `ใบนี้อยู่ใน${cageTitle(cage?.label)} ที่แบ่งกับ ${plates} — ระบบแบ่งให้คร่าว ๆ ก่อน (คันที่ยังไม่เลือกได้ "ที่เหลือ" เฉลี่ยกัน)${added ? ` · เพิ่มอีก ${added} ใบในกรงให้แล้ว` : ""} · กดเลือก ทั้งกรง/½/นับได้ ที่การ์ดกรง`;
 }
 
 /**
@@ -110,7 +104,7 @@ export async function duplicateBlockReason(manifestId: string, pickupId: string)
   const done = others.find((o) => o.cage?.doneAt);
   if (done?.cage) {
     const by = done.cage.doneBy ? ` โดย ${done.cage.doneBy}` : "";
-    return `ใบนี้อยู่กรง ${done.cage.label} ที่กด “ขนหมดแล้ว”${by} (ไปกับรถ ${done.pickup.plate}) — จดซ้ำไม่ได้`;
+    return `ใบนี้อยู่${cageTitle(done.cage.label)} ที่กด “ขนหมดแล้ว”${by} (ไปกับรถ ${done.pickup.plate}) — จดซ้ำไม่ได้`;
   }
 
   // รถที่ปิดงานออกไปแล้ว รับไปรวมกี่ชิ้น (ไม่ได้ใส่จำนวน = ทั้งใบ)
@@ -238,7 +232,7 @@ export async function moveToCage(pmId: string, target: string, by?: string): Pro
       ? await db.cage.create({ data: { label: await nextLabel(), originPickupId: pm.pickupId, createdBy: by ?? null, closedAt: new Date() } })
       : await db.cage.findFirst({ where: { id: target, shares: { some: { pickupId: pm.pickupId } } } });
   if (!cage) return { error: "รถคันนี้ไม่ได้อยู่ในกรงนั้น" };
-  if (cage.id === pm.cageId) return { ok: `อยู่กรง ${cage.label} อยู่แล้ว` };
+  if (cage.id === pm.cageId) return { ok: `อยู่${cageTitle(cage.label)} อยู่แล้ว` };
 
   // ใบเดียวกันที่รถคันอื่นจดไว้ในกรงเดิม → ย้ายตามไปด้วย
   const rows = pm.manifestId && pm.cageId
@@ -253,7 +247,7 @@ export async function moveToCage(pmId: string, target: string, by?: string): Pro
   // กรงเดิม: รถที่ไม่เหลือใบแล้วออกจากกรง · กรงว่างลบทิ้ง · คำนวณส่วนแบ่งใหม่ทั้งสองกรง
   for (const pickupId of pickups) await tidyCage(pm.cageId, pickupId);
   await applyCageShares(cage.id);
-  return { ok: `ย้าย ${pm.code} → กรง ${cage.label}` };
+  return { ok: `ย้าย ${pm.code} → ${cageTitle(cage.label)}` };
 }
 
 /** ตั้งชื่อกรงเอง (เช่น ตามเลขบนกรงจริง) */
@@ -261,5 +255,5 @@ export async function renameCage(cageId: string, raw: string): Promise<{ ok?: st
   const label = raw.trim().toUpperCase().slice(0, 12);
   if (!label) return { error: "ใส่ชื่อกรง" };
   const c = await db.cage.update({ where: { id: cageId }, data: { label } }).catch(() => null);
-  return c ? { ok: `เปลี่ยนชื่อเป็นกรง ${label}` } : { error: "ไม่พบกรงนี้" };
+  return c ? { ok: `เปลี่ยนชื่อเป็น${cageTitle(label)}` } : { error: "ไม่พบกรงนี้" };
 }

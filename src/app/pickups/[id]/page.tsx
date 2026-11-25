@@ -8,8 +8,7 @@ import { fmtDateTime, fmtDuration, fmtTime, fmtWeight } from "@/lib/format";
 import { totalWeight } from "@/lib/products";
 import { currentManifestPrefix } from "@/lib/manifests";
 import { deletePickup, refetchPickupManifests } from "@/app/actions/pickups";
-import { runCageFlash, runPickupStatusSync, runPickupUncheckedFlash, runPickupWeight } from "@/app/actions/manifests";
-import { displayCageNames } from "@/lib/cage-name";
+import { runPickupStatusSync, runPickupUncheckedFlash, runPickupWeight } from "@/app/actions/manifests";
 import { hasCookie } from "@/lib/bigseller";
 import { ConfirmButton, PrintButton, SyncButton } from "@/components/client-actions";
 import {
@@ -156,23 +155,27 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
   const flashAt = allParcels.reduce<Date | null>((d, p) => (p.flashFetchedAt && (!d || p.flashFetchedAt > d) ? p.flashFetchedAt : d), null);
   // ชิ้น Flash ที่ยังไม่เคยเช็คเลย — ปุ่มเช็คเฉพาะกลุ่มนี้ เร็วกว่าเช็คทั้งคัน
   const unchecked = allParcels.filter((p) => !p.flashFetchedAt && isFlashParcel(p)).length;
-  // สรุป Flash ทีละกรง — เช็คแล้ว Flash ยังไม่รับ (ไม่พบ / ยังไม่มีสถานะ) = ขาด ต้องตามว่าตกอยู่กรงไหน
-  const cageNames = displayCageNames(pickup.cages.map((c) => c.cage.label ?? ""));
-  const cageFlash = [
-    ...pickup.cages.map((c, i) => ({ id: c.cage.id as string | null, name: cageNames[i] })),
-    ...(pickup.manifests.some((pm) => !pm.cageId && pm.manifest?.parcels.length) ? [{ id: null, name: "ไม่ได้ลงกรง" }] : []),
-  ]
-    .map((c) => {
-      const flash = pickup.manifests.filter((pm) => pm.cageId === c.id).flatMap((pm) => pm.manifest?.parcels ?? []).filter((p) => isFlashParcel(p) && !isCancelled(p));
-      return {
-        ...c,
-        total: flash.length,
-        unchecked: flash.filter((p) => !p.flashFetchedAt).length,
-        received: flash.filter((p) => p.flashState != null).length,
-        missing: flash.filter((p) => p.flashFetchedAt && p.flashState == null).map((p) => p.trackingNo),
-      };
-    })
-    .filter((c) => c.total > 0);
+  // สรุป Flash ทีละกรง (โชว์ที่การ์ดกรง) — เช็คแล้ว Flash ยังไม่รับ (ไม่พบ / ยังไม่มีสถานะ) = ขาด ต้องหาในกรงนั้น
+  const flashByCage = new Map(
+    pickup.cages.flatMap(({ cage }) => {
+      const flash = pickup.manifests
+        .filter((pm) => pm.cageId === cage.id)
+        .flatMap((pm) => pm.manifest?.parcels ?? [])
+        .filter((p) => isFlashParcel(p) && !isCancelled(p));
+      if (!flash.length) return [];
+      return [
+        [
+          cage.id,
+          {
+            total: flash.length,
+            unchecked: flash.filter((p) => !p.flashFetchedAt).length,
+            received: flash.filter((p) => p.flashState != null).length,
+            missing: flash.filter((p) => p.flashFetchedAt && p.flashState == null).map((p) => p.trackingNo),
+          },
+        ] as const,
+      ];
+    }),
+  );
 
   const info: [string, ReactNode][] = [
     ["ขนส่ง", pickup.carrier ?? "—"],
@@ -283,6 +286,7 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
                 others: c.cage.shares.map((o) => ({ plate: o.pickup.plate, share: o.share, count: o.count, doing: o.pickup.status === "DOING" })),
                 cancelled: cancelledByCage.get(c.cage.id) ?? [],
                 done: c.cage.doneAt ? { by: c.cage.doneBy, at: fmtTime(c.cage.doneAt) } : null,
+                flash: flashByCage.get(c.cage.id) ?? null,
               }))}
               cancelledCount={cancelledCount}
               goodsCount={goodsCount}
@@ -308,34 +312,6 @@ export default async function PickupPage({ params, searchParams }: PageProps<"/p
                 </div>
               }
             >
-              {cageFlash.length > 0 && (
-                <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {cageFlash.map((c) => (
-                    <Panel key={c.id ?? "none"} className={`flex flex-col gap-2 p-3 ${c.missing.length ? "ring-1 ring-error/30" : ""}`}>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="font-medium text-ink">{c.name}</span>
-                        <span className="tabular text-xs text-mute">Flash {c.total} ชิ้น</span>
-                      </div>
-                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[13px]">
-                        <span className="text-teal-deep">รับแล้ว {c.received}</span>
-                        {c.missing.length > 0 && <span className="font-semibold text-error-deep">ขาด {c.missing.length}</span>}
-                        {c.unchecked > 0 && <span className="text-mute">ยังไม่เช็ค {c.unchecked}</span>}
-                        {!c.missing.length && !c.unchecked && c.received === c.total && <span className="text-teal-deep">✓ ครบ</span>}
-                      </div>
-                      {c.missing.length > 0 && (
-                        <details className="text-xs">
-                          <summary className="cursor-pointer text-error-deep">ดูเลขที่ขาด</summary>
-                          <p className="mt-1 font-mono leading-relaxed break-all text-body">{c.missing.join(" ")}</p>
-                        </details>
-                      )}
-                      <div className="flex flex-wrap gap-2">
-                        {c.unchecked > 0 && <SyncButton action={runCageFlash.bind(null, pickup.id, c.id, true)} label={`เช็คที่ยังไม่เช็ค (${c.unchecked})`} />}
-                        <SyncButton action={runCageFlash.bind(null, pickup.id, c.id, false)} label="เช็คทั้งกรง" variant="outline" />
-                      </div>
-                    </Panel>
-                  ))}
-                </div>
-              )}
               <div className="flex flex-wrap items-start gap-x-2">
                 <div className="min-w-0 flex-1">
                   <TableSearch scope="pickup-parcels" />
