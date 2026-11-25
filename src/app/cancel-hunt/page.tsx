@@ -7,7 +7,7 @@ import { backDays, huntMinutes, lastHuntRun, type HuntItem } from "@/lib/cancel-
 import { cageTitle } from "@/lib/cage-name";
 import { Empty, Page, PageHeader } from "@/components/kit";
 import type { Prisma } from "@/generated/prisma/client";
-import { HuntCard, HuntSyncBar, ManualReceiveBox, type HuntView } from "./hunt-client";
+import { CopyHuntList, HuntCard, HuntSyncBar, ManualReceiveBox, type HuntView } from "./hunt-client";
 
 export const metadata = { title: "ตามของยกเลิก" };
 
@@ -304,6 +304,22 @@ export default async function CancelHuntPage({ searchParams }: PageProps<"/cance
           </div>
         )}
       </div>
+
+      {views.length > 0 && (
+        <CopyHuntList
+          views={views}
+          title={[
+            tab === "find" ? "ของยกเลิกที่ต้องหา" : `ของยกเลิก (${TABS.find((t) => t.key === tab)!.label})`,
+            range === "today" ? "วันนี้" : `ย้อนหลัง ${N} วัน`,
+            label && LABELS.find((l) => l.key === label)!.label,
+            carrier && carrierChips.find((c) => c.key === carrier)?.label,
+            before,
+            nomf && "ยังไม่ลงใบนำจ่าย",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        />
+      )}
 
       {views.length ? (
         <div className="grid gap-3 lg:grid-cols-2">

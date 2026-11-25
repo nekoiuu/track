@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { unstable_rethrow, useRouter } from "next/navigation";
-import { CheckIcon, KeyboardIcon, Loader2Icon, RefreshCwIcon, SearchXIcon, SkipForwardIcon, TruckIcon, Undo2Icon } from "lucide-react";
+import { CheckIcon, CopyIcon, KeyboardIcon, Loader2Icon, RefreshCwIcon, SearchXIcon, SkipForwardIcon, TruckIcon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "cn";
 import { pullCancelsNow, receiveManual, setHuntStatus, type ManualReceive } from "@/app/actions/cancel-hunt";
@@ -11,6 +11,7 @@ import type { HuntItem } from "@/lib/cancel-hunt";
 import type { CancelHuntStatus } from "@/generated/prisma/enums";
 import { Mono, Panel, Pill } from "@/components/kit";
 import { Button } from "@/components/ui/button";
+import { copyText } from "@/components/copy-trackings";
 
 export type HuntView = {
   id: string;
@@ -135,6 +136,45 @@ export function HuntSyncBar({
   );
 }
 
+/** อยู่ไหน — ข้อความสั้นสำหรับส่ง LINE */
+const whereText = (h: HuntView) =>
+  h.truck?.state === "gone"
+    ? `ขึ้นรถ ${h.truck.plate} ไปแล้ว${h.cage ? ` (${h.cage})` : ""}`
+    : h.manifest
+      ? `ใบ ${h.manifest.no}${h.cage ? ` · ${h.cage}` : ""}${h.truck?.state === "loading" ? ` · รถ ${h.truck.plate} กำลังรับของ` : ""}`
+      : "ยังไม่ลงใบนำจ่าย (โต๊ะแพ็ก / กองรอสแกน)";
+
+/** 1 ออเดอร์ → ข้อความสำหรับ LINE */
+const huntText = (h: HuntView, n?: number) =>
+  [
+    `${n ? `${n}) ` : ""}${h.trackingNo ?? h.packageNo ?? h.orderNo ?? "—"}${h.shopName ? ` · ${h.shopName}` : ""}`,
+    ...h.items.map((it) => `   - ${it.sku || it.name} ×${it.qty}`),
+    `   📍 ${whereText(h)}`,
+    `   ยกเลิก ${h.cancelledAt ?? "—"}${h.cancelReason ? ` · ${h.cancelReason}` : ""}`,
+  ].join("\n");
+
+/**
+ * คัดลอกรายการที่เห็นอยู่ (ตามตัวกรอง) เป็นข้อความ — วางส่งในกลุ่ม LINE แจ้งเจ้าหน้าที่ได้เลย
+ */
+export function CopyHuntList({ views, title }: { views: HuntView[]; title: string }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    if (!views.length) return void toast.error("ไม่มีรายการให้คัดลอก");
+    const text = [`📦 ${title} ${views.length} ใบ`, ...views.map((v, i) => huntText(v, i + 1)), "เจอแล้วถ่ายรูปใบปะหน้าส่งในกลุ่ม QR ได้เลย 🙏"].join(
+      "\n\n",
+    );
+    if (!(await copyText(text))) return void toast.error("คัดลอกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    toast.success(`คัดลอก ${views.length} รายการแล้ว — วางใน LINE ได้เลย`);
+    setDone(true);
+    setTimeout(() => setDone(false), 1500);
+  };
+  return (
+    <Button type="button" variant="outline" className="mb-3 h-11" onClick={() => void copy()}>
+      {done ? <CheckIcon /> : <CopyIcon />} คัดลอกส่ง LINE ({views.length})
+    </Button>
+  );
+}
+
 /** การ์ด 1 ออเดอร์ — ของอะไร อยู่ไหน + ปุ่มผลการหา */
 export function HuntCard({ h }: { h: HuntView }) {
   const router = useRouter();
@@ -180,6 +220,19 @@ export function HuntCard({ h }: { h: HuntView }) {
             <Pill tone="red">ต้องหา</Pill>
           ) : null}
           <Pill tone="amber">{beforeLabel(h.beforeStatus)}</Pill>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-body"
+            aria-label="คัดลอกใบนี้ส่ง LINE"
+            onClick={async () => {
+              if (await copyText(huntText(h))) toast.success("คัดลอกแล้ว — วางใน LINE ได้เลย");
+              else toast.error("คัดลอกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+            }}
+          >
+            <CopyIcon /> คัดลอก
+          </Button>
         </div>
       </div>
 

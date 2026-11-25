@@ -175,6 +175,20 @@ export async function runPickupStatusSync(pickupId: string): Promise<SyncState> 
   return r;
 }
 
+/**
+ * ปุ่มเช็ค Flash ทีละกรงในหน้ารอบรถ — เฉพาะใบที่คันนี้ยิงลงกรงนั้น (cageId null = ใบที่ไม่ได้ลงกรง)
+ * เจ้าหน้าที่ดูได้ว่ากรงไหนยังมีชิ้นที่ Flash ยังไม่รับ (ขาด)
+ */
+export async function runCageFlash(pickupId: string, cageId: string | null, uncheckedOnly = false): Promise<SyncState> {
+  const user = await requirePickupAccess(pickupId);
+  const pms = await db.pickupManifest.findMany({ where: { pickupId, cageId, manifestId: { not: null } }, select: { manifestId: true } });
+  if (!pms.length) return { ok: true, message: "กรงนี้ยังไม่มีใบนำจ่าย" };
+  const r = await refreshStatuses([...new Set(pms.map((pm) => pm.manifestId!))], !uncheckedOnly, uncheckedOnly);
+  audit(user, "manifest.statuses", "pickup", pickupId, `กรง ${cageId ?? "ไม่ระบุ"}${uncheckedOnly ? " · เฉพาะที่ยังไม่เช็ค" : ""} · ${r.message}`);
+  revalidatePath("/", "layout");
+  return r;
+}
+
 /** ปุ่ม "เช็ค Flash หน้านี้" ในหน้าติดตามสถานะ — เฉพาะชิ้นที่แสดงอยู่ (ไม่เกิน 1 หน้า) */
 export async function runTrackingFlash(parcelIds: string[], uncheckedOnly = false): Promise<SyncState> {
   const user = await requireUser();
