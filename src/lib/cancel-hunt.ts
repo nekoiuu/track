@@ -98,6 +98,10 @@ export function parseBsTime(v: string | number | null | undefined): Date | null 
   return null;
 }
 
+/** ยกเลิกโดยผู้ขาย (cancelByDisplay ตามภาษาบัญชี: Seller / ผู้ขาย) — ใช้ใน SQL ด้วย ห้ามมีอักขระพิเศษของ regex Postgres */
+const SELLER_CANCEL_SQL = "^(seller|ผู้ขาย)";
+const SELLER_CANCEL = new RegExp(SELLER_CANCEL_SQL, "i");
+
 /** สถานะก่อนยกเลิกที่แปลว่า "ของออกจากชั้นแล้ว" — หยิบ/แพ็ก/รอรถ */
 const HANDLED_BEFORE = /to ?ship|to ?pickup|pickup|process|pack|ship/i;
 
@@ -107,6 +111,8 @@ const HANDLED_BEFORE = /to ?ship|to ?pickup|pickup|process|pack|ship/i;
  */
 export function needsFind(r: Row) {
   if (/unpaid/i.test(r.inCancelBeforeStatus ?? "")) return false;
+  // ร้านยกเลิกเอง (เช่น ของขาด) = ไม่ได้แพ็ก/ส่งออกไป ไม่ต้องตาม
+  if (SELLER_CANCEL.test(r.cancelByDisplay ?? "")) return false;
   return Boolean(
     r.printLabelMark || r.printPickListMark || r.trackingNo?.trim() || r.packTime || parseBsTime(r.packTimeStr) || HANDLED_BEFORE.test(r.inCancelBeforeStatus ?? ""),
   );
@@ -209,7 +215,9 @@ async function storeRecords(records: ReturnType<typeof toRecord>[]) {
       "cancelledAt" = EXCLUDED."cancelledAt", "cancelReason" = EXCLUDED."cancelReason", "cancelBy" = EXCLUDED."cancelBy",
       "beforeStatus" = EXCLUDED."beforeStatus", "labelPrintedAt" = EXCLUDED."labelPrintedAt",
       "pickPrintedAt" = EXCLUDED."pickPrintedAt", "packedAt" = EXCLUDED."packedAt", items = EXCLUDED.items,
-      "needsFind" = "CancelHunt"."needsFind" OR EXCLUDED."needsFind", "updatedAt" = now()
+      -- ผู้ขายยกเลิก = ไม่ต้องตามเสมอ (แม้เคยขึ้นว่าต้องหา) · นอกนั้นขึ้นได้ไม่ลง
+      "needsFind" = CASE WHEN EXCLUDED."cancelBy" ~* ${SELLER_CANCEL_SQL} THEN false ELSE "CancelHunt"."needsFind" OR EXCLUDED."needsFind" END,
+      "updatedAt" = now()
     RETURNING "needsFind", (xmax = 0) AS inserted`;
   const days = [...new Set(records.map((r) => r.day))];
 
@@ -376,12 +384,12 @@ export async function pushHuntToSheets(day: string = todayKey(), ids?: string[])
           goods,
           r.beforeStatus ?? "",
           (r.parcelId && placeOf.get(r.parcelId)) || "ยังไม่ลงใบนำจ่าย (โต๊ะแพ็ก / กองรอสแกน)",
-          RESULT_TEXT[r.status],
+          r.status === "PENDING" && !r.needsFind ? `ไม่ต้องหา${SELLER_CANCEL.test(r.cancelBy ?? "") ? " (ผู้ขายยกเลิก)" : ""}` : RESULT_TEXT[r.status],
           r.resolvedAt ? `${r.resolvedBy ?? ""} ${fmtTime(r.resolvedAt)}${r.note ? ` · ${r.note}` : ""}`.trim() : "",
           [r.cancelBy, r.cancelReason].filter(Boolean).join(": "),
         ],
-        tint: RESULT_TINT[r.status],
-        strong: { cols: [RESULT_COL], color: RESULT_STRONG[r.status] },
+        tint: RESULT_TINT[r.status === "PENDING" && !r.needsFind ? "SKIPPED" : r.status],
+        strong: { cols: [RESULT_COL], color: RESULT_STRONG[r.status === "PENDING" && !r.needsFind ? "SKIPPED" : r.status] },
       },
     };
   });
