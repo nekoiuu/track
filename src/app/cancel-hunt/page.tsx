@@ -7,7 +7,7 @@ import { huntMinutes, lastHuntRun, type HuntItem } from "@/lib/cancel-hunt";
 import { cageTitle } from "@/lib/cage-name";
 import { Empty, Page, PageHeader } from "@/components/kit";
 import type { Prisma } from "@/generated/prisma/client";
-import { HuntCard, HuntSyncBar, type HuntView } from "./hunt-client";
+import { HuntCard, HuntSyncBar, ManualReceiveBox, type HuntView } from "./hunt-client";
 
 export const metadata = { title: "ตามของยกเลิก" };
 
@@ -136,6 +136,8 @@ export default async function CancelHuntPage({ searchParams }: PageProps<"/cance
         lastOk={run?.ok ?? null}
         lastMessage={run?.message ?? null}
       />
+
+      <ManualReceiveBox />
 
       <nav aria-label="แท็บ" className="mb-4 flex flex-wrap gap-1.5">
         {TABS.map((t, i) => (

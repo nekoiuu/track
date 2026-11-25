@@ -375,7 +375,10 @@ export type QrReceiveResult = {
  * เลขตรงกับของยกเลิก (ยังไม่หา / หาไม่เจอ) → "ได้รับสินค้ากลับมาแล้ว" (FOUND) + ใครส่ง เมื่อไหร่ · อัปเดตชีตแถวนั้น
  * ส่งเลขซ้ำได้ (บอทส่งทั้งวันซ้ำเป็นรอบ ๆ) — ที่ได้รับแล้วไม่เปลี่ยนอีก
  */
-export async function receiveByQr(tracks: string[], { by, at }: { by?: string | null; at?: Date | null } = {}): Promise<QrReceiveResult> {
+export async function receiveByQr(
+  tracks: string[],
+  { by, at, source = "qr" }: { by?: string | null; at?: Date | null; source?: "qr" | "manual" } = {},
+): Promise<QrReceiveResult> {
   const want = [...new Set(tracks.map((t) => String(t).replace(/\s+/g, "").toUpperCase()).filter((t) => /^[A-Z0-9]{8,30}$/.test(t)))].slice(0, 3000);
   const result: QrReceiveResult = { matched: [], already: [], unknown: [] };
   if (!want.length) return result;
@@ -395,7 +398,10 @@ export async function receiveByQr(tracks: string[], { by, at }: { by?: string | 
     await db.cancelHunt.updateMany({
       // เงื่อนไขสถานะซ้ำอีกรอบ — คนกดพร้อมกันไม่ทับกัน
       where: { id: { in: todo.map((r) => r.id) }, status: { in: ["PENDING", "MISSING"] } },
-      data: { status: "FOUND", resolvedAt: when, resolvedBy: `สแกน QR (LINE)${by ? ` · ${by}` : ""}`.slice(0, 120), note: "ได้รับสินค้ากลับมาแล้ว — อ่าน QR จากรูปในกลุ่ม LINE" },
+      data:
+        source === "manual"
+          ? { status: "FOUND", resolvedAt: when, resolvedBy: (by ?? "ใส่เลขเอง").slice(0, 120), note: "ได้รับสินค้ากลับมาแล้ว — ใส่เลขเอง (รูปใน LINE อ่านไม่ได้ / บอทไม่ได้เปิด)" }
+          : { status: "FOUND", resolvedAt: when, resolvedBy: `สแกน QR (LINE)${by ? ` · ${by}` : ""}`.slice(0, 120), note: "ได้รับสินค้ากลับมาแล้ว — อ่าน QR จากรูปในกลุ่ม LINE" },
     });
     result.matched = todo.map((r) => ({
       trackingNo: r.trackingNo!,
@@ -408,4 +414,27 @@ export async function receiveByQr(tracks: string[], { by, at }: { by?: string | 
     for (const [day, ids] of byDay) await pushHuntToSheets(day, ids).catch((e) => console.warn("[cancel-hunt] อัปเดต Sheets (QR) ไม่สำเร็จ:", e));
   }
   return result;
+}
+
+/**
+ * เลขท้าย (เช่น 4–8 ตัวท้ายที่อ่านได้จากรูปไม่ชัด) → เลขแทร็คเต็มของของยกเลิกที่ยังไม่ได้คืน
+ * เจอใบเดียว = ใช้ได้ · เจอหลายใบ = ambiguous (ต้องพิมพ์ยาวขึ้น) · ไม่เจอ = none
+ */
+export async function expandTails(tails: string[]) {
+  const since = new Date(Date.now() - QR_MATCH_DAYS * 86_400_000);
+  const open = await db.cancelHunt.findMany({
+    where: { trackingNo: { not: null }, firstSeenAt: { gte: since }, status: { in: ["PENDING", "MISSING"] } },
+    select: { trackingNo: true },
+  });
+  const nos = [...new Set(open.map((r) => r.trackingNo!))];
+  const full: string[] = [];
+  const ambiguous: { tail: string; hits: string[] }[] = [];
+  const none: string[] = [];
+  for (const t of tails) {
+    const hits = nos.filter((n) => n.endsWith(t));
+    if (hits.length === 1) full.push(hits[0]);
+    else if (hits.length > 1) ambiguous.push({ tail: t, hits: hits.slice(0, 5) });
+    else none.push(t);
+  }
+  return { full, ambiguous, none };
 }

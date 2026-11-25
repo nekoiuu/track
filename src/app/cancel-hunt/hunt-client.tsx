@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { unstable_rethrow, useRouter } from "next/navigation";
-import { CheckIcon, Loader2Icon, RefreshCwIcon, SearchXIcon, SkipForwardIcon, TruckIcon, Undo2Icon } from "lucide-react";
+import { CheckIcon, KeyboardIcon, Loader2Icon, RefreshCwIcon, SearchXIcon, SkipForwardIcon, TruckIcon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "cn";
-import { pullCancelsNow, setHuntStatus } from "@/app/actions/cancel-hunt";
+import { pullCancelsNow, receiveManual, setHuntStatus, type ManualReceive } from "@/app/actions/cancel-hunt";
 import type { HuntItem } from "@/lib/cancel-hunt";
 import type { CancelHuntStatus } from "@/generated/prisma/enums";
 import { Mono, Panel, Pill } from "@/components/kit";
@@ -306,6 +306,96 @@ export function HuntCard({ h }: { h: HuntView }) {
             </Button>
           )}
         </div>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * ใส่เลขแทร็คเอง — รูปใบปะหน้าในกลุ่ม LINE ที่บอทอ่าน QR ไม่ได้ (ไม่ชัด) หรือส่งตอนบอทไม่ได้เปิด
+ * พิมพ์ได้หลายเลข · เลขท้าย 4 ตัวขึ้นไปก็ได้ (ตรงใบเดียวในของยกเลิกที่ยังไม่ได้คืน)
+ */
+export function ManualReceiveBox() {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [res, setRes] = useState<ManualReceive | null>(null);
+  const [pending, start] = useTransition();
+
+  const submit = () =>
+    start(async () => {
+      try {
+        const r = await receiveManual(text);
+        setRes(r);
+        if (r.error) return void toast.error(r.error);
+        if (r.matched.length) {
+          toast.success(`ได้รับสินค้ากลับมาแล้ว ${r.matched.length} ชิ้น`);
+          setText("");
+          router.refresh();
+        } else toast("ไม่มีเลขที่ตรงกับของยกเลิกที่ยังไม่ได้คืน");
+      } catch (e) {
+        unstable_rethrow(e);
+        toast.error("บันทึกไม่สำเร็จ — ลองอีกครั้ง");
+      }
+    });
+
+  if (!open)
+    return (
+      <Button type="button" variant="outline" className="mb-4 h-11" onClick={() => setOpen(true)}>
+        <KeyboardIcon /> ใส่เลขแทร็คเอง (รูปอ่านไม่ได้ / บอทไม่ได้เปิด)
+      </Button>
+    );
+
+  return (
+    <Panel className="mb-4 flex flex-col gap-3 p-4">
+      <div>
+        <div className="font-medium text-ink">ใส่เลขแทร็คของที่ได้คืนแล้ว</div>
+        <div className="text-sm text-body">
+          สำหรับรูปในกลุ่ม LINE ที่บอทอ่าน QR ไม่ได้ หรือส่งตอนบอทไม่ได้เปิด — ใส่ได้หลายเลข (บรรทัดละเลข) · พิมพ์แค่เลขท้าย 4 ตัวขึ้นไปก็ได้
+        </div>
+      </div>
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={4}
+        placeholder={"THT47135HVJ2B4Z\nHVJ2B4Z"}
+        className="rounded-lg border bg-card px-3 py-2 font-mono text-sm"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit();
+        }}
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" className="h-11 bg-teal text-white hover:bg-teal-deep" disabled={pending || !text.trim()} onClick={submit}>
+          {pending ? <Loader2Icon className="animate-spin" /> : <CheckIcon />} บันทึกว่าได้รับสินค้ากลับมาแล้ว
+        </Button>
+        <Button type="button" variant="ghost" className="h-11" onClick={() => (setOpen(false), setRes(null))}>
+          ปิด
+        </Button>
+      </div>
+      {res && !res.error && (
+        <ul className="flex flex-col gap-1 text-sm">
+          {res.matched.map((m) => (
+            <li key={m.trackingNo} className="text-teal-deep">
+              ✅ <Mono>{m.trackingNo}</Mono> {m.items && `— ${m.items}`}
+            </li>
+          ))}
+          {res.already.map((t) => (
+            <li key={t} className="text-body">
+              • <Mono>{t}</Mono> บันทึกไว้แล้วก่อนหน้า
+            </li>
+          ))}
+          {res.ambiguous.map((a) => (
+            <li key={a.tail} className="text-warning-deep">
+              ⚠️ <Mono>{a.tail}</Mono> ตรงหลายใบ ({a.hits.join(", ")}) — พิมพ์ให้ยาวขึ้น
+            </li>
+          ))}
+          {res.unknown.map((t) => (
+            <li key={t} className="text-mute">
+              ✕ <Mono>{t}</Mono> ไม่ใช่ของยกเลิกที่รอคืน (ใน 14 วัน)
+            </li>
+          ))}
+        </ul>
       )}
     </Panel>
   );

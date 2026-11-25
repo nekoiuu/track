@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { audit, requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { pushHuntToSheets, syncTodayCancels, type HuntSync } from "@/lib/cancel-hunt";
+import { expandTails, pushHuntToSheets, receiveByQr, syncTodayCancels, type HuntSync, type QrReceiveResult } from "@/lib/cancel-hunt";
 import type { CancelHuntStatus } from "@/generated/prisma/enums";
 
 const LABEL: Record<CancelHuntStatus, string> = {
@@ -49,4 +49,34 @@ export async function pullCancelsNow(): Promise<HuntSync> {
   const r = await syncTodayCancels({ manual: true });
   if (r.ran && r.ok) revalidatePath("/cancel-hunt");
   return r;
+}
+
+export type ManualReceive = QrReceiveResult & {
+  /** เลขท้ายที่ตรงหลายใบ — ต้องพิมพ์ยาวขึ้น */
+  ambiguous: { tail: string; hits: string[] }[];
+  error?: string;
+};
+
+/**
+ * ใส่เลขแทร็คเอง — รูปใน LINE อ่าน QR ไม่ได้ / ส่งตอนบอทไม่ได้เปิด
+ * ใส่ได้หลายเลข (ขึ้นบรรทัด / เว้นวรรค / จุลภาค) · เลขสั้น (4–9 ตัว) = เลขท้าย จับคู่กับของยกเลิกที่ยังไม่ได้คืน
+ * ตรงกับของยกเลิก → ได้รับสินค้ากลับมาแล้ว (ชื่อคนใส่ + เวลา) เหมือนสแกน QR
+ */
+export async function receiveManual(text: string): Promise<ManualReceive> {
+  const user = await requireUser();
+  const tokens = [...new Set(String(text ?? "").toUpperCase().split(/[\s,;]+/).map((t) => t.replace(/[^A-Z0-9]/g, "")).filter((t) => t.length >= 4))].slice(0, 500);
+  const empty: ManualReceive = { matched: [], already: [], unknown: [], ambiguous: [] };
+  if (!tokens.length) return { ...empty, error: "ใส่เลขแทร็ค (หรือเลขท้ายอย่างน้อย 4 ตัว)" };
+
+  const tails = tokens.filter((t) => t.length < 10);
+  const fulls = tokens.filter((t) => t.length >= 10);
+  const ex = tails.length ? await expandTails(tails) : { full: [], ambiguous: [], none: [] };
+  const r = await receiveByQr([...fulls, ...ex.full], { by: user.name, source: "manual" });
+  const result: ManualReceive = { ...r, unknown: [...r.unknown, ...ex.none], ambiguous: ex.ambiguous };
+
+  if (r.matched.length) {
+    audit(user, "cancel.hunt", "cancelHunt", null, `ใส่เลขเอง ได้รับสินค้ากลับมาแล้ว ${r.matched.length}: ${r.matched.map((m) => m.trackingNo).join(", ")}`);
+    revalidatePath("/cancel-hunt");
+  }
+  return result;
 }
